@@ -1,0 +1,7 @@
+
+	
+CREATE TABLE users (
+	id varchar(400),
+	level int,
+	xp int
+)

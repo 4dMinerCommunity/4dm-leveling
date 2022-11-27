@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "4dm-leveling"
+version = "1.0.0"
+description = ""
+authors = ["Showierdata9978 <mellfang36@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.8.0,<3.9"
+nextcord = "2.3.2"
+requests = "^2.28.1"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
