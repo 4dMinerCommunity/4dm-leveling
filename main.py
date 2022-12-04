@@ -1,4 +1,4 @@
-# https://discord.com/api/oauth2/authorize?client_id=1048637141065936996&scope=bot%20messages.read%20applications.commands
+# https://discord.com/api/oauth2/authorize?client_id=<should prob censor this too>&scope=bot%20messages.read%20applications.commands
 
 import nextcord, nextcord.ext.commands
 from typing import Optional
