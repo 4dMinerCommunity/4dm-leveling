@@ -6,11 +6,9 @@ This is a bot that replaces mee6 leveling from the 4DM Discord server (invite is
 ## Fetures
 
 - leveling
+- rank command (query level of yourself or others)
+- leaderboard
 
 ## Planned fetures
-
-- leaderboard CMD
-- level cmd (m6 rank cmd)
-
-
+---
 
