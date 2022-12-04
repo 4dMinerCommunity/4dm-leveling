@@ -1,4 +1,5 @@
 # https://discord.com/api/oauth2/authorize?client_id=<should prob censor this too>&scope=bot%20messages.read%20applications.commands
+from os import environ as env
 
 import nextcord, nextcord.ext.commands
 from typing import Optional
@@ -197,7 +198,7 @@ database.execute("""CREATE TABLE IF NOT EXISTS
 """)
 
 try:
-  client.run('sike, you wish')
+  client.run(env['token'])
 except KeyboardInterrupt:  # should not be called because client.run handles it by itself without throwing an error
   print('exiting due to keyboard interrupt')
 
