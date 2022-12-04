@@ -23,8 +23,8 @@ client = nextcord.ext.commands.Bot(command_prefix='!', intents=intents)
 
 # BOT_SERVER_IDS = [954156776671043625]
 # BOT_CHANNEL_ID = 955220937995874334
-BOT_SERVER_IDS = [<my own private server, I aint giving out that id>]
-BOT_CHANNEL_ID = <my own private server, I aint giving out that id>
+BOT_SERVER_IDS = [954156776671043625]
+BOT_CHANNEL_ID = <955220937995874334>
 
 TIMEOUT = 60  # in seconds
 
