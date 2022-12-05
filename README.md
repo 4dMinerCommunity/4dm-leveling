@@ -1,6 +1,6 @@
 # 4DM-Leveling
 
-This is a bot that replaces mee6 leveling from the 4DM Discord server (invite is [here](https://discord.gg/PGH4jVWN))
+This is a bot that replaces mee6 leveling from the 4DM Discord server (invite is [here](https://discord.gg/pMtZa6AVy2))
 
 
 ## Fetures
