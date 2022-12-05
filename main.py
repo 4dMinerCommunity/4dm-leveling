@@ -1,11 +1,10 @@
-import re  # regex
+import nextcord, nextcord.ext.commands
+from sqlite3 import connect
+
 import time
 from datetime import datetime
-from sqlite3 import connect
+import re  # regex
 from typing import Optional
-
-import nextcord
-import nextcord.ext.commands
 
 strlen = lambda string: len(string.encode("utf-8"))
 import schedule
