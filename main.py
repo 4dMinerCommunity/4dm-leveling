@@ -271,6 +271,10 @@ async def msg(message):
     await (await get_channel(BOT_CHANNEL_ID)).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}")
     
     print(f'{author} leveled up! (xp: {xp}, lvl: {level})')
+  
+  if commitEvent.is_set():
+    database.commit()
+    commitEvent.clear()
 
 
 # database.execute("DROP TABLE android_metadata;")  # clean up after my android sqlite editor
@@ -293,8 +297,9 @@ def prune_timeouts():
   global usr_cooldowns  # do atomic swap of dict to prevent thread issues
   usr_cooldowns = { id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time.time() }  # only keep timeouts in the future
 
-schedule.every(5).minutes.do( lambda: database.commit() )
-schedule.every(1).seconds.do( prune_timeouts )
+commitEvent = threading.Event()
+schedule.every(5).minutes.do( lambda: commitEvent.set() )
+schedule.every(60).minutes.do( prune_timeouts )
 # schedule.every(5).seconds.do( lambda: print('Meep.') )  # Meep. (great for testing)
 
 exitEvent = threading.Event()
@@ -322,14 +327,3 @@ schedulerStoppedEvent.wait(3)  # wait for thread to sudoku
 
 database.commit()
 database.close()
-
-
-"""
-Changelog:
- - use correct metric for discord character limit
- - fix levelup messages using data from before levelup
- - remove unecessary database calls for calculating rank
- - use cache for getting the bot channel, then fall back to fetch_channel (instead of iterating over ALL channels and threads)
- - clean up the timeouts periodically, to prevent lsit getting unnecessarily long
- - fix scheduling by moving it to a separate thread
-"""
