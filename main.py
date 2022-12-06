@@ -8,6 +8,7 @@ from typing import Optional
 # strlen = lambda string: len(string.encode('utf-8'))
 strlen = lambda string: len(string)  # oops, dc actually uses unicode char counts
 import schedule
+import threading
 
 from env import *  # api keys
 from settings import *
@@ -287,12 +288,37 @@ database.execute("""CREATE TABLE IF NOT EXISTS
 """)
 # database.execute("UPDATE users SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
 
+
+def prune_timeouts():
+  global usr_cooldowns  # do atomic swap of dict to prevent thread issues
+  usr_cooldowns = { id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time.time() }  # only keep timeouts in the future
+
 schedule.every(5).minutes.do( lambda: database.commit() )
+schedule.every(1).seconds.do( prune_timeouts )
+# schedule.every(5).seconds.do( lambda: print('Meep.') )  # Meep. (great for testing)
+
+exitEvent = threading.Event()
+schedulerStoppedEvent = threading.Event()
+
+def checkTime():
+  while True:
+    for _ in range(100):
+      if exitEvent.is_set():
+        schedulerStoppedEvent.set()
+        return
+      time.sleep(0.1)
+    schedule.run_pending()
+threading.Thread(target=checkTime).start()
+
+
 
 try:
   client.run(BOT_API_KEY)
 except KeyboardInterrupt:  # should not be called because client.run handles it by itself without throwing an error
   print('exiting due to keyboard interrupt')
+
+exitEvent.set()  # signal thread to sudoku
+schedulerStoppedEvent.wait(3)  # wait for thread to sudoku
 
 database.commit()
 database.close()
@@ -304,4 +330,6 @@ Changelog:
  - fix levelup messages using data from before levelup
  - remove unecessary database calls for calculating rank
  - use cache for getting the bot channel, then fall back to fetch_channel (instead of iterating over ALL channels and threads)
+ - clean up the timeouts periodically, to prevent lsit getting unnecessarily long
+ - fix scheduling by moving it to a separate thread
 """
