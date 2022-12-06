@@ -5,9 +5,10 @@ import time
 from datetime import datetime
 import re  # regex
 from typing import Optional
-
-strlen = lambda string: len(string.encode("utf-8"))
+# strlen = lambda string: len(string.encode('utf-8'))
+strlen = lambda string: len(string)  # oops, dc actually uses unicode char counts
 import schedule
+import threading
 
 from env import *  # api keys
 from settings import *
@@ -49,105 +50,92 @@ def get_userlevel(user_id):
 
 
 # returns rank as int or None if unranked (level 0)
-def get_user_rank(user_id):
-    xp, level = get_userlevel(user_id)
-
-    if level < 1:
-        return None
-
-    rank = database.execute(
-        "SELECT count(*)+1 FROM users WHERE level > ? OR ( level = ? AND xp > ? )",
-        (level, level, xp),
-    ).fetchone()[0]
-
-    return rank
-
+def get_user_rank(xp,level):
+  # xp, level = get_userlevel(user_id)
+  
+  if level < 1:
+    return None
+  
+  rank = database.execute( "SELECT count(*)+1 FROM users WHERE level > ? OR ( level = ? AND xp > ? )", (level,level,xp) ).fetchone()[0]
+  
+  return rank
 
 async def get_user(user_id):
-    user_id = int(
-        user_id
-    )  # you would not believe how many issues this caused, I wasted 3 hours on this shit. Fuck soft typing, fuck nextcord, fuck sqlite
+  user_id = int(user_id)  # you would not believe how many issues this caused, I wasted 3 hours on this shit. Fuck soft typing, fuck nextcord, fuck sqlite
+  
+  # get from cache
+  user = client.get_user(user_id)
+  
+  # get fresh
+  if not user:
+    try:
+      log(f'trying to fetch unknown user <@{user_id}>')
+      user = await client.fetch_user(user_id)
+    except: pass
+  
+  return user
 
-    # get from cache
-    user = client.get_user(user_id)
-
-    # get fresh
-    if not user and not DEBUG:
-        try:
-            log(f"trying to fetch unknown user <@{user_id}>", user)
-            user = await client.fetch_user(user_id)
-        except:
-            pass
-
-    return user
-
+async def get_channel(channel_id):
+  channel_id = int(channel_id)  # jsut to make sure after the get_user() disaster
+  
+  # get from cache
+  channel = client.get_channel(channel_id)
+  
+  # get fresh
+  if not channel:
+    try:
+      log(f'trying to fetch unknown channel {channel_id}')
+      channel = await client.fetch_channel(channel_id)
+    except: pass
+  
+  return channel
 
 ############# LEADERBOARD COMMAND #############
 
+async def get_leaderboard_msg( page: int, pagesize: int ) -> str:
+  
+  no_users = database.execute( "SELECT COUNT(*) FROM users WHERE level > 0 " ).fetchone()[0]
+  no_pages = ( no_users + pagesize - 1 )//pagesize
+  
+  if page > no_pages:
+    page = no_pages
+  
+  chunks = []
+  chunk = f"LEADERBOARD page {page}/{no_pages}\n```"
+  
+  rank = (page-1)*pagesize
+  for id, xp, level in database.execute( "SELECT id, xp, level FROM users WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize, (page-1)*pagesize) ).fetchall():
+    rank += 1
+    
+    try:
+      if xp != oldxp or level != oldlvl:
+        showrank = rank
+    except:  # first run
+      showrank = get_user_rank(xp,level)
+    
+    user = await get_user(id)
+    username = str(user) if user else f'<@{id}>'
+    
+    row = f"Rank {showrank}: {username} level {level} ({xp}/{LEVELUP_XP(level)})\n"
+    
+    if strlen(chunk+row+"```") > DISCORD_CHAR_LIMIT:  # this row would make message too long, start new block
+      chunk += "```"
+      chunks.append(chunk)
+      chunk = "```"
+    
+    chunk += row
+    
+    oldxp,oldlvl = xp,level
+  
+  chunk += "```"
+  chunks.append(chunk)
+  
+  return chunks
 
-async def get_leaderboard_msg(page: int, pagesize: int) -> str:
-
-    no_users = database.execute(
-        "SELECT COUNT(*) FROM users WHERE level > 0 "
-    ).fetchone()[0]
-    no_pages = (no_users + pagesize - 1) // pagesize
-
-    if page > no_pages:
-        page = no_pages
-
-    chunks = []
-    chunk = f"LEADERBOARD page {page}/{no_pages}\n```"
-
-    rank = (page - 1) * pagesize
-    for id, xp, level in database.execute(
-        "SELECT id, xp, level FROM users WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?",
-        (pagesize, (page - 1) * pagesize),
-    ).fetchall():
-        rank += 1
-
-        try:
-            if xp != oldxp or level != oldlvl:
-                showrank = rank
-        except:  # first run
-            showrank = get_user_rank(id)
-
-        user = await get_user(id)
-        username = str(user) if user else f"<@{id}>"
-
-        row = f"Rank {showrank}: {username} level {level} ({xp}/{LEVELUP_XP(level)})\n"
-
-        if (
-            strlen(chunk + row + "```") > DISCORD_CHAR_LIMIT
-        ):  # this row would make message too long, start new block
-            chunk += "```"
-            chunks.append(chunk)
-            chunk = "```"
-
-        chunk += row
-
-        oldxp, oldlvl = xp, level
-
-    chunk += "```"
-    chunks.append(chunk)
-
-    return chunks
-
-
-@client.slash_command(
-    guild_ids=BOT_SERVER_IDS, description="List the top ranked (most 'active') users"
-)
-async def leaderboard(
-    message: nextcord.Interaction,
-    page: int = nextcord.SlashOption(
-        name="page", required=False, default=1, min_value=1
-    ),
-    pagesize: int = nextcord.SlashOption(
-        name="pagesize",
-        required=False,
-        default=10,
-        min_value=1,
-        max_value=MAX_LEADERBOARD_SIZE,
-    ),
+@client.slash_command(guild_ids=BOT_SERVER_IDS, description="List the top ranked (most 'active') users")
+async def leaderboard(message:  nextcord.Interaction,
+  page: int = nextcord.SlashOption(name="page", required=False, default=1, min_value=1),
+  pagesize: int = nextcord.SlashOption(name="pagesize", required=False, default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE),
 ) -> None:
     log(f"/leaderboard {page} {pagesize}")
 
@@ -189,41 +177,31 @@ async def leaderboard(message: nextcord.Interaction, page=None, pagesize=None):
 
 ############# RANK COMMAND #############
 
+async def get_rank_msg( user_id: int ) -> str:
+  
+  xp, level = get_userlevel(user_id)
+  rank = get_user_rank(xp,level)
+  
+  user = await get_user(user_id)
+  username = str(user) if user else f'<@{user_id}>'
+  
+  if rank is None:
+    return f"User `{username}` is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
+  
+  return f"User `{username}` is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
 
-async def get_rank_msg(user_id: int) -> str:
-
-    xp, level = get_userlevel(user_id)
-    rank = get_user_rank(user_id)
-
-    user = await get_user(user_id)
-    username = str(user) if user else f"<@{user_id}>"
-
-    if rank is None:
-        return f"User `{username}` is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
-
-    return f"User `{username}` is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
-
-
-@client.slash_command(
-    guild_ids=BOT_SERVER_IDS, description="Get xp and level of yourself or another user"
-)
-async def rank(
-    message: nextcord.Interaction,
-    username: Optional[nextcord.Member] = nextcord.SlashOption(
-        name="user", required=False, description="set to query for user, or leave empty"
-    ),
-) -> None:
-    log(f"/rank {username}")
-
-    if username is None:
-        queried_user_id = message.user.id
-    else:
-        queried_user_id = username.id
-
-    msg = await get_rank_msg(int(queried_user_id))
-
-    await message.send(msg)
-
+@client.slash_command(guild_ids=BOT_SERVER_IDS, description='Get xp and level of yourself or another user')
+async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
+  log(f'/rank {username}')
+  
+  if username is None:
+    queried_user_id = message.user.id
+  else:
+    queried_user_id = username.id
+  
+  msg = await get_rank_msg( int(queried_user_id) )
+  
+  await message.send(msg)
 
 @client.command()
 async def rank(message, username=None):
@@ -292,49 +270,44 @@ async def pingme(message: nextcord.Interaction) -> None:
 
 @client.listen("on_message")
 async def msg(message):
-    author = message.author
-    # log(f'got msg by {author.name}')
+  author = message.author
+  # log(f'got msg by {author.name}')
 
-    if author.bot:
-        return  # ignore bots
-    if usr_cooldowns.get(author.id, 0.0) > time.time():
-        log(
-            f"skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0.0) - time.time()}s remaining)"
-        )
-        return  # check cooldown
+  if author.bot: return  # ignore bots
+  if usr_cooldowns.get(author.id, 0.0) > time.time():
+    log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0.0) - time.time()}s remaining)')
+    return # check cooldown
 
-    xp, level = get_userlevel(author.id)
+  xp, level = get_userlevel(author.id)
 
-    xp += XP_GAIN_AMOUNT()
-
-    if LEVELUP_XP(level) - xp <= 0:
-        channel = nextcord.utils.get(client.get_all_channels(), id=BOT_CHANNEL_ID)
-
-        xp -= LEVELUP_XP(
-            level
-        )  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
-        level += 1
-
-        rank = get_user_rank(
-            author.id
-        )  # should never be None since user just got to at least level 1
-
-        username = (
-            f"<@{author.id}>" if pinguser(author.id) else f"`{author}`"
-        )  # ping if set to do so
-
-        await channel.send(
-            f"{username} leveled up to {level}!!  They are currently ranked {rank}"
-        )
-
-        print(f"{author} leveled up! (xp: {xp}, lvl: {level})")
-
-    usr_cooldowns[author.id] = time.time() + TIMEOUT
-    database.execute(
-        "UPDATE users SET xp = ?, level = ? WHERE id = ?;", (xp, level, str(author.id))
-    )
-
-    log(f"got msg by {author} (xp: {xp}, lvl: {level})")
+  xp += XP_GAIN_AMOUNT()
+  
+  leveledup = xp >= LEVELUP_XP(level)
+  if leveledup:
+    xp -= LEVELUP_XP(level)  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
+    level += 1
+    leveledup = True
+  
+  
+  usr_cooldowns[author.id] = time.time() + TIMEOUT
+  database.execute("UPDATE users SET xp = ?, level = ? WHERE id = ?;", (xp, level, str(author.id)))
+  
+  log(f'got msg by {author} (xp: {xp}, lvl: {level})')
+  
+  if leveledup:
+    
+    xp, level = get_userlevel(author.id)  # jsut to be sure, yaknow
+    rank = get_user_rank(xp,level)  # should never be None since user just got to at least level 1
+    
+    username = f'<@{author.id}>' if pinguser(author.id) else f'`{author}`'  # ping if set to do so
+    
+    await (await get_channel(BOT_CHANNEL_ID)).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}")
+    
+    print(f'{author} leveled up! (xp: {xp}, lvl: {level})')
+  
+  if commitEvent.is_set():
+    database.commit()
+    commitEvent.clear()
 
 
 # database.execute("DROP TABLE android_metadata;")  # clean up after my android sqlite editor
@@ -352,29 +325,41 @@ database.execute(
   ping_users (
     id UNSIGNED BIG INT PRIMARY KEY
   );
-"""
-)
+""")
+# database.execute("UPDATE users SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
 
-schedule.every(5).minutes.do(lambda: database.commit())
+
+def prune_timeouts():
+  global usr_cooldowns  # do atomic swap of dict to prevent thread issues
+  usr_cooldowns = { id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time.time() }  # only keep timeouts in the future
+
+commitEvent = threading.Event()
+schedule.every(5).minutes.do( lambda: commitEvent.set() )
+schedule.every(60).minutes.do( prune_timeouts )
+# schedule.every(5).seconds.do( lambda: print('Meep.') )  # Meep. (great for testing)
+
+exitEvent = threading.Event()
+schedulerStoppedEvent = threading.Event()
+
+def checkTime():
+  while True:
+    for _ in range(100):
+      if exitEvent.is_set():
+        schedulerStoppedEvent.set()
+        return
+      time.sleep(0.1)
+    schedule.run_pending()
+threading.Thread(target=checkTime).start()
+
+
 
 try:
     client.run(BOT_API_KEY)
 except KeyboardInterrupt:  # should not be called because client.run handles it by itself without throwing an error
     print("exiting due to keyboard interrupt")
 
+exitEvent.set()  # signal thread to sudoku
+schedulerStoppedEvent.wait(3)  # wait for thread to sudoku
+
 database.commit()
 database.close()
-
-
-"""
-Changelog:
- - moved settings, env variables, etc. to env.py
- - larger leaderboards, and support for longer names, by splitting messages into chunks
- - give users the same rank if they have equal xp
- - show rank of users in various places
- - full discord name mentioned in levelup messages like elsewhere
- - pingme command to toggle getting pinged on levelup
- - corresponding sqlite table to hold that pingme info
- - getting pinged on levelup if set to do so
- - don't commit for every message, that'll just either kill your drive or get cached to ram anyways. Commiting when exiting and every 5 mins is plenty
-"""
