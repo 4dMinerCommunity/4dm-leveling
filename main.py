@@ -5,7 +5,8 @@ import time
 from datetime import datetime
 import re  # regex
 from typing import Optional
-strlen = lambda string: len(string.encode('utf-8'))
+# strlen = lambda string: len(string.encode('utf-8'))
+strlen = lambda string: len(string)  # oops, dc actually uses unicode char counts
 import schedule
 
 from env import *  # api keys
@@ -40,8 +41,8 @@ def get_userlevel(user_id):
   return xp, level
 
 # returns rank as int or None if unranked (level 0)
-def get_user_rank(user_id):
-  xp, level = get_userlevel(user_id)
+def get_user_rank(xp,level):
+  # xp, level = get_userlevel(user_id)
   
   if level < 1:
     return None
@@ -57,13 +58,28 @@ async def get_user(user_id):
   user = client.get_user(user_id)
   
   # get fresh
-  if not user and not DEBUG:
+  if not user:
     try:
-      log(f'trying to fetch unknown user <@{user_id}>', user)
+      log(f'trying to fetch unknown user <@{user_id}>')
       user = await client.fetch_user(user_id)
     except: pass
   
   return user
+
+async def get_channel(channel_id):
+  channel_id = int(channel_id)  # jsut to make sure after the get_user() disaster
+  
+  # get from cache
+  channel = client.get_channel(channel_id)
+  
+  # get fresh
+  if not channel:
+    try:
+      log(f'trying to fetch unknown channel {channel_id}')
+      channel = await client.fetch_channel(channel_id)
+    except: pass
+  
+  return channel
 
 ############# LEADERBOARD COMMAND #############
 
@@ -86,7 +102,7 @@ async def get_leaderboard_msg( page: int, pagesize: int ) -> str:
       if xp != oldxp or level != oldlvl:
         showrank = rank
     except:  # first run
-      showrank = get_user_rank(id)
+      showrank = get_user_rank(xp,level)
     
     user = await get_user(id)
     username = str(user) if user else f'<@{id}>'
@@ -144,7 +160,7 @@ async def leaderboard( message: nextcord.Interaction, page = None, pagesize = No
 async def get_rank_msg( user_id: int ) -> str:
   
   xp, level = get_userlevel(user_id)
-  rank = get_user_rank(user_id)
+  rank = get_user_rank(xp,level)
   
   user = await get_user(user_id)
   username = str(user) if user else f'<@{user_id}>'
@@ -232,25 +248,28 @@ async def msg(message):
 
   xp += XP_GAIN_AMOUNT()
   
-  if LEVELUP_XP(level) - xp <= 0:
-    channel = nextcord.utils.get(client.get_all_channels(), id=BOT_CHANNEL_ID)
-    
+  leveledup = xp >= LEVELUP_XP(level)
+  if leveledup:
     xp -= LEVELUP_XP(level)  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
     level += 1
-    
-    rank = get_user_rank(author.id)  # should never be None since user just got to at least level 1
-    
-    username = f'<@{author.id}>' if pinguser(author.id) else f'`{author}`'  # ping if set to do so
-    
-    await channel.send(f"{username} leveled up to {level}!!  They are currently ranked {rank}")
-    
-    print(f'{author} leveled up! (xp: {xp}, lvl: {level})')
+    leveledup = True
   
   
   usr_cooldowns[author.id] = time.time() + TIMEOUT
   database.execute("UPDATE users SET xp = ?, level = ? WHERE id = ?;", (xp, level, str(author.id)))
   
   log(f'got msg by {author} (xp: {xp}, lvl: {level})')
+  
+  if leveledup:
+    
+    xp, level = get_userlevel(author.id)  # jsut to be sure, yaknow
+    rank = get_user_rank(xp,level)  # should never be None since user just got to at least level 1
+    
+    username = f'<@{author.id}>' if pinguser(author.id) else f'`{author}`'  # ping if set to do so
+    
+    await (await get_channel(BOT_CHANNEL_ID)).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}")
+    
+    print(f'{author} leveled up! (xp: {xp}, lvl: {level})')
 
 
 # database.execute("DROP TABLE android_metadata;")  # clean up after my android sqlite editor
@@ -266,6 +285,7 @@ database.execute("""CREATE TABLE IF NOT EXISTS
     id UNSIGNED BIG INT PRIMARY KEY
   );
 """)
+# database.execute("UPDATE users SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
 
 schedule.every(5).minutes.do( lambda: database.commit() )
 
@@ -280,13 +300,8 @@ database.close()
 
 """
 Changelog:
- - moved settings, env variables, etc. to env.py
- - larger leaderboards, and support for longer names, by splitting messages into chunks
- - give users the same rank if they have equal xp
- - show rank of users in various places
- - full discord name mentioned in levelup messages like elsewhere
- - pingme command to toggle getting pinged on levelup
- - corresponding sqlite table to hold that pingme info
- - getting pinged on levelup if set to do so
- - don't commit for every message, that'll just either kill your drive or get cached to ram anyways. Commiting when exiting and every 5 mins is plenty
+ - use correct metric for discord character limit
+ - fix levelup messages using data from before levelup
+ - remove unecessary database calls for calculating rank
+ - use cache for getting the bot channel, then fall back to fetch_channel (instead of iterating over ALL channels and threads)
 """
