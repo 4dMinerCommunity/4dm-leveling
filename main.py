@@ -1,5 +1,5 @@
 import nextcord, nextcord.ext.commands
-from sqlite3 import connect 
+from sqlite3 import connect
 
 import time
 from datetime import datetime
@@ -14,14 +14,15 @@ from env import *  # api keys
 from settings import *
 
 log = print
-if not DEBUG: log = lambda *_: None  # disable log on release
+if not DEBUG:
+    log = lambda *_: None  # disable log on release
 
 
 intents = nextcord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-client = nextcord.ext.commands.Bot(command_prefix='!', intents=intents)
+client = nextcord.ext.commands.Bot(command_prefix="!", intents=intents)
 
 
 database = connect("sqlite.db")
@@ -29,17 +30,24 @@ database = connect("sqlite.db")
 usr_cooldowns = {}
 
 
-
 # get xp, level, ... of user_id, and create user entry if it doesn't exist
 def get_userlevel(user_id):
-  
-  #check if user is in the db
-  if database.execute("SELECT id FROM users WHERE id = ?", (str(user_id),)).fetchone() is None:
-    database.execute("INSERT INTO users VALUES (?, ?, ?)", (str(user_id), 0, 0))
-  
-  xp, level = database.execute("SELECT xp, level FROM users WHERE id = ?", (str(user_id),) ).fetchone()
-  
-  return xp, level
+
+    # check if user is in the db
+    if (
+        database.execute(
+            "SELECT id FROM users WHERE id = ?", (str(user_id),)
+        ).fetchone()
+        is None
+    ):
+        database.execute("INSERT INTO users VALUES (?, ?, ?)", (str(user_id), 0, 0))
+
+    xp, level = database.execute(
+        "SELECT xp, level FROM users WHERE id = ?", (str(user_id),)
+    ).fetchone()
+
+    return xp, level
+
 
 # returns rank as int or None if unranked (level 0)
 def get_user_rank(xp,level):
@@ -129,32 +137,43 @@ async def leaderboard(message:  nextcord.Interaction,
   page: int = nextcord.SlashOption(name="page", required=False, default=1, min_value=1),
   pagesize: int = nextcord.SlashOption(name="pagesize", required=False, default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE),
 ) -> None:
-  log(f'/leaderboard {page} {pagesize}')
-  
-  chunks = await get_leaderboard_msg( page, pagesize )
-  
-  await message.send(chunks.pop(0))
-  for chunk in chunks:
-    await message.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
+    log(f"/leaderboard {page} {pagesize}")
+
+    chunks = await get_leaderboard_msg(page, pagesize)
+
+    await message.send(chunks.pop(0))
+    for chunk in chunks:
+        await message.channel.send(
+            chunk
+        )  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
+
 
 @client.command()
-async def leaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
-  log(f'!leaderboard {page} {pagesize}')
-  
-  try: page = int(page)
-  except: page = 1
-  try: pagesize = int(pagesize)
-  except: pagesize = 10
-  
-  if page < 1: page = 1
-  if pagesize < 1: pagesize = 1
-  if pagesize > MAX_LEADERBOARD_SIZE: pagesize = MAX_LEADERBOARD_SIZE
-  
-  chunks = await get_leaderboard_msg( page, pagesize )
-  
-  await message.reply(chunks.pop(0))
-  for chunk in chunks:
-    await message.channel.send(chunk)
+async def leaderboard(message: nextcord.Interaction, page=None, pagesize=None):
+    log(f"!leaderboard {page} {pagesize}")
+
+    try:
+        page = int(page)
+    except:
+        page = 1
+    try:
+        pagesize = int(pagesize)
+    except:
+        pagesize = 10
+
+    if page < 1:
+        page = 1
+    if pagesize < 1:
+        pagesize = 1
+    if pagesize > MAX_LEADERBOARD_SIZE:
+        pagesize = MAX_LEADERBOARD_SIZE
+
+    chunks = await get_leaderboard_msg(page, pagesize)
+
+    await message.reply(chunks.pop(0))
+    for chunk in chunks:
+        await message.channel.send(chunk)
+
 
 ############# RANK COMMAND #############
 
@@ -185,57 +204,71 @@ async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Membe
   await message.send(msg)
 
 @client.command()
-async def rank(message, username = None ):
-  log(f'!rank {username}')
-  
-  if username is not None:
-    if match := re.match(r"<@(\d+)>", username):
-      queried_user_id = match.group(1)
+async def rank(message, username=None):
+    log(f"!rank {username}")
+
+    if username is not None:
+        if match := re.match(r"<@(\d+)>", username):
+            queried_user_id = match.group(1)
+        else:
+            await message.reply(f"Who's `{username}`?  (use @person or /rank)")
+            return
     else:
-      await message.reply(f"Who's `{username}`?  (use @person or /rank)")
-      return
-  else:
-    queried_user_id = message.author.id
-  
-  msg = await get_rank_msg( int(queried_user_id) )
-  
-  await message.reply(msg)
+        queried_user_id = message.author.id
+
+    msg = await get_rank_msg(int(queried_user_id))
+
+    await message.reply(msg)
+
 
 ############# PINGME COMMAND #############
 
 # returns True if user has choosen to get pinged, False if they haven't
-def pinguser( user_id: int ) -> bool:
-  return database.execute( "SELECT id FROM ping_users WHERE id = ?", (user_id,) ).fetchone() is not None
+def pinguser(user_id: int) -> bool:
+    return (
+        database.execute(
+            "SELECT id FROM ping_users WHERE id = ?", (user_id,)
+        ).fetchone()
+        is not None
+    )
 
-async def do_pingme( user_id: int ) -> str:
-  user_id = int(user_id)
-  
-  if pinguser(user_id):
-    database.execute( "DELETE FROM ping_users WHERE id = ?", (user_id,) )
-    return "you will no longer get pinged on levelup"
-  else:
-    database.execute( "INSERT INTO ping_users VALUES (?)", (user_id,) )
-    return "you will now get pinged uppon levelup"
 
-@client.slash_command(guild_ids=BOT_SERVER_IDS, description='Toggle getting pinged when you level up (default is off)')
-async def pingme( message: nextcord.Interaction ) -> None:
-  log(f'/pingme {message.user}')
-  
-  msg = await do_pingme( message.user.id )
-  
-  await message.send(msg)
+async def do_pingme(user_id: int) -> str:
+    user_id = int(user_id)
+
+    if pinguser(user_id):
+        database.execute("DELETE FROM ping_users WHERE id = ?", (user_id,))
+        return "you will no longer get pinged on levelup"
+    else:
+        database.execute("INSERT INTO ping_users VALUES (?)", (user_id,))
+        return "you will now get pinged uppon levelup"
+
+
+@client.slash_command(
+    guild_ids=BOT_SERVER_IDS,
+    description="Toggle getting pinged when you level up (default is off)",
+)
+async def pingme(message: nextcord.Interaction) -> None:
+    log(f"/pingme {message.user}")
+
+    msg = await do_pingme(message.user.id)
+
+    await message.send(msg)
+
 
 @client.command()
-async def pingme( message: nextcord.Interaction ) -> None:
-  log(f'!pingme {message.author}')
-  
-  msg = await do_pingme( message.author.id )
-  
-  await message.reply(msg)
+async def pingme(message: nextcord.Interaction) -> None:
+    log(f"!pingme {message.author}")
+
+    msg = await do_pingme(message.author.id)
+
+    await message.reply(msg)
+
 
 ############# XP LISTENER #############
 
-@client.listen('on_message')
+
+@client.listen("on_message")
 async def msg(message):
   author = message.author
   # log(f'got msg by {author.name}')
@@ -278,14 +311,17 @@ async def msg(message):
 
 
 # database.execute("DROP TABLE android_metadata;")  # clean up after my android sqlite editor
-database.execute("""CREATE TABLE IF NOT EXISTS
+database.execute(
+    """CREATE TABLE IF NOT EXISTS
   users (
     id varchar(400),
     level int,
     xp int
   );
-""")
-database.execute("""CREATE TABLE IF NOT EXISTS
+"""
+)
+database.execute(
+    """CREATE TABLE IF NOT EXISTS
   ping_users (
     id UNSIGNED BIG INT PRIMARY KEY
   );
@@ -318,9 +354,9 @@ threading.Thread(target=checkTime).start()
 
 
 try:
-  client.run(BOT_API_KEY)
+    client.run(BOT_API_KEY)
 except KeyboardInterrupt:  # should not be called because client.run handles it by itself without throwing an error
-  print('exiting due to keyboard interrupt')
+    print("exiting due to keyboard interrupt")
 
 exitEvent.set()  # signal thread to sudoku
 schedulerStoppedEvent.wait(3)  # wait for thread to sudoku
