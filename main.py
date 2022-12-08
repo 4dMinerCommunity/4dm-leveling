@@ -215,7 +215,7 @@ async def do_pingme( user_id: int ) -> str:
     return "you will no longer get pinged on levelup"
   else:
     database.execute( "INSERT INTO ping_users VALUES (?)", (user_id,) )
-    return "you will now get pinged uppon levelup"
+    return "you will now get pinged upon levelup"
 
 @client.slash_command(guild_ids=BOT_SERVER_IDS, description='Toggle getting pinged when you level up (default is off)')
 async def pingme( message: nextcord.Interaction ) -> None:
