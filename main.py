@@ -41,6 +41,11 @@ def get_userlevel(user_id):
   
   return xp, level
 
+def get_totalxp(xp,level):
+  # yes I know you could get a direct math equation for that sum but then you need to manage 2 equations,
+  # here you can just change LEVELUP_XP to whatever. The runtime difference is negligible
+  return xp + sum( LEVELUP_XP(lvl) for lvl in range(level) )
+
 # returns rank as int or None if unranked (level 0)
 def get_user_rank(xp,level):
   # xp, level = get_userlevel(user_id)
@@ -84,7 +89,7 @@ async def get_channel(channel_id):
 
 ############# LEADERBOARD COMMAND #############
 
-async def get_leaderboard_msg( page: int, pagesize: int ) -> str:
+async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
   
   no_users = database.execute( "SELECT COUNT(*) FROM users WHERE level > 0 " ).fetchone()[0]
   no_pages = ( no_users + pagesize - 1 )//pagesize
@@ -105,10 +110,14 @@ async def get_leaderboard_msg( page: int, pagesize: int ) -> str:
     except:  # first run
       showrank = get_user_rank(xp,level)
     
+    totalxp = get_totalxp(xp,level)
     user = await get_user(id)
     username = str(user) if user else f'<@{id}>'
     
-    row = f"Rank {showrank}: {username} level {level} ({xp}/{LEVELUP_XP(level)})\n"
+    if is_xp_leaderboard:
+      row = f"Rank {showrank}: {username} - {totalxp} XP\n"
+    else:
+      row = f"Rank {showrank}: {username} level {level} ({xp}/{LEVELUP_XP(level)})\n"
     
     if strlen(chunk+row+"```") > DISCORD_CHAR_LIMIT:  # this row would make message too long, start new block
       chunk += "```"
@@ -137,7 +146,7 @@ async def leaderboard(message:  nextcord.Interaction,
   for chunk in chunks:
     await message.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
 
-@client.command()
+@client.command(help="List the top ranked (most 'active') users")
 async def leaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
   log(f'!leaderboard {page} {pagesize}')
   
@@ -156,6 +165,40 @@ async def leaderboard( message: nextcord.Interaction, page = None, pagesize = No
   for chunk in chunks:
     await message.channel.send(chunk)
 
+############# XPLEADERBOARD COMMAND #############
+
+@client.slash_command(guild_ids=BOT_SERVER_IDS, description="List the top ranked (most 'active') users")
+async def xpleaderboard(message:  nextcord.Interaction,
+  page: int = nextcord.SlashOption(name="page", required=False, default=1, min_value=1),
+  pagesize: int = nextcord.SlashOption(name="pagesize", required=False, default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE),
+) -> None:
+  log(f'/xpleaderboard {page} {pagesize}')
+  
+  chunks = await get_leaderboard_msg( page, pagesize, True )
+  
+  await message.send(chunks.pop(0))
+  for chunk in chunks:
+    await message.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !xpleaderboard doesn't. Fuck discord
+
+@client.command(help="List the top ranked (most 'active') users with their total XP")
+async def xpleaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
+  log(f'!xpleaderboard {page} {pagesize}')
+  
+  try: page = int(page)
+  except: page = 1
+  try: pagesize = int(pagesize)
+  except: pagesize = 10
+  
+  if page < 1: page = 1
+  if pagesize < 1: pagesize = 1
+  if pagesize > MAX_LEADERBOARD_SIZE: pagesize = MAX_LEADERBOARD_SIZE
+  
+  chunks = await get_leaderboard_msg( page, pagesize, True )
+  
+  await message.reply(chunks.pop(0))
+  for chunk in chunks:
+    await message.channel.send(chunk)
+
 ############# RANK COMMAND #############
 
 async def get_rank_msg( user_id: int ) -> str:
@@ -164,12 +207,17 @@ async def get_rank_msg( user_id: int ) -> str:
   rank = get_user_rank(xp,level)
   
   user = await get_user(user_id)
-  username = str(user) if user else f'<@{user_id}>'
+  if check_snitchtome(user_id):
+    username = f'<@{user_id}>'
+  elif user:
+    username = f'`{user}`'
+  else:
+    username = f'`<@{user_id}>`'
   
   if rank is None:
-    return f"User `{username}` is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
+    return f"User {username} is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
   
-  return f"User `{username}` is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
+  return f"User {username} is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
 
 @client.slash_command(guild_ids=BOT_SERVER_IDS, description='Get xp and level of yourself or another user')
 async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
@@ -184,12 +232,16 @@ async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Membe
   
   await message.send(msg)
 
-@client.command()
+@client.command(help="Get xp and level of yourself or another user")
 async def rank(message, username = None ):
   log(f'!rank {username}')
   
   if username is not None:
-    if match := re.match(r"<@(\d+)>", username):
+    if match := re.match(r"<@(\d+)>", username):  # how user mentions look internally <@234086647409410059>
+      queried_user_id = match.group(1)
+    elif match := re.match(r"\\?<\\?@(\d+)\\?>", username):  # user mention but escaped
+      queried_user_id = match.group(1)
+    elif match := re.match(r"(\d+)", username):  # user id directly
       queried_user_id = match.group(1)
     else:
       await message.reply(f"Who's `{username}`?  (use @person or /rank)")
@@ -198,6 +250,61 @@ async def rank(message, username = None ):
     queried_user_id = message.author.id
   
   msg = await get_rank_msg( int(queried_user_id) )
+  
+  await message.reply(msg)
+
+############# XPRANK COMMAND #############
+
+async def get_xp_msg( user_id: int ) -> str:
+  
+  xp, level = get_userlevel(user_id)
+  rank = get_user_rank(xp,level)
+  totalxp = get_totalxp(xp,level)
+  
+  user = await get_user(user_id)
+  if check_snitchtome(user_id):
+    username = f'<@{user_id}>'
+  elif user:
+    username = f'`{user}`'
+  else:
+    username = f'`<@{user_id}>`'
+  
+  if rank is None:
+    return f"User {username} is currently unranked with {totalxp} XP"
+  
+  return f"User {username} is at rank {rank} with {totalxp} XP"
+
+@client.slash_command(guild_ids=BOT_SERVER_IDS, description='Get total XP of yourself or another user')
+async def xp(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
+  log(f'/xp {username}')
+  
+  if username is None:
+    queried_user_id = message.user.id
+  else:
+    queried_user_id = username.id
+  
+  msg = await get_xp_msg( int(queried_user_id) )
+  
+  await message.send(msg)
+
+@client.command(help="Get total XP of yourself or another user")
+async def xp(message, username = None ):
+  log(f'!xp {username}')
+  
+  if username is not None:
+    if match := re.match(r"<@(\d+)>", username):  # how user mentions look internally <@234086647409410059>
+      queried_user_id = match.group(1)
+    elif match := re.match(r"\\?<\\?@(\d+)\\?>", username):  # user mention but escaped
+      queried_user_id = match.group(1)
+    elif match := re.match(r"(\d+)", username):  # user id directly
+      queried_user_id = match.group(1)
+    else:
+      await message.reply(f"Who's `{username}`?  (use @person or /xp)")
+      return
+  else:
+    queried_user_id = message.author.id
+  
+  msg = await get_xp_msg( int(queried_user_id) )
   
   await message.reply(msg)
 
@@ -225,11 +332,43 @@ async def pingme( message: nextcord.Interaction ) -> None:
   
   await message.send(msg)
 
-@client.command()
+@client.command(help='Toggle getting pinged when you level up (default is off)')
 async def pingme( message: nextcord.Interaction ) -> None:
   log(f'!pingme {message.author}')
   
   msg = await do_pingme( message.author.id )
+  
+  await message.reply(msg)
+
+############# SNITCHTOME COMMAND #############
+
+# returns True if user has choosen to get pinged, False if they haven't
+def check_snitchtome( user_id: int ) -> bool:
+  return database.execute( "SELECT id FROM snitchtome_users WHERE id = ?", (user_id,) ).fetchone() is not None
+
+async def toggle_snitchtome( user_id: int ) -> str:
+  user_id = int(user_id)
+  
+  if check_snitchtome(user_id):
+    database.execute( "DELETE FROM snitchtome_users WHERE id = ?", (user_id,) )
+    return "you will no longer get notified when someone queries your rank"
+  else:
+    database.execute( "INSERT INTO snitchtome_users VALUES (?)", (user_id,) )
+    return "I will now snitch to you when someone queries your rank"
+
+@client.slash_command(guild_ids=BOT_SERVER_IDS, description='Toggle getting pinged when someone queries your rank (default is off)')
+async def snitchtome( message: nextcord.Interaction ) -> None:
+  log(f'/snitchtome {message.user}')
+  
+  msg = await toggle_snitchtome( message.user.id )
+  
+  await message.send(msg)
+
+@client.command(help='Toggle getting pinged when someone queries your rank (default is off)')
+async def snitchtome( message: nextcord.Interaction ) -> None:
+  log(f'!snitchtome {message.author}')
+  
+  msg = await toggle_snitchtome( message.author.id )
   
   await message.reply(msg)
 
@@ -287,6 +426,11 @@ database.execute("""CREATE TABLE IF NOT EXISTS
 """)
 database.execute("""CREATE TABLE IF NOT EXISTS
   ping_users (
+    id UNSIGNED BIG INT PRIMARY KEY
+  );
+""")
+database.execute("""CREATE TABLE IF NOT EXISTS
+  snitchtome_users (
     id UNSIGNED BIG INT PRIMARY KEY
   );
 """)
