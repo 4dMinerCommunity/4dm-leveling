@@ -57,6 +57,15 @@ def get_user_rank(xp,level):
   
   return rank
 
+async def getUserName(user_id):
+  if check_snitchtome(user_id):
+    username = f'<@{user_id}>'
+  elif user := await get_user(user_id):
+    username = f'`{user}`'
+  else:
+    username = f'`<@{user_id}>`'
+  return username
+
 async def get_user(user_id):
   user_id = int(user_id)  # you would not believe how many issues this caused, I wasted 3 hours on this shit. Fuck soft typing, fuck nextcord, fuck sqlite
   
@@ -87,6 +96,22 @@ async def get_channel(channel_id):
   
   return channel
 
+def parseIntInput(num,default,min=None,max=None):
+  try: num = int(num)
+  except: num = default
+  
+  if min is not None:
+    if num < min: num = min
+  if max is not None:
+    if num > max: num = max
+  
+  return num
+
+def intToWidth(int,width):
+  int = str(int)
+  int = (width-len(int))*' ' + int
+  return int
+
 ############# LEADERBOARD COMMAND #############
 
 async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
@@ -97,39 +122,46 @@ async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool
   if page > no_pages:
     page = no_pages
   
-  chunks = []
-  chunk = f"LEADERBOARD page {page}/{no_pages}\n```"
+  no_skippedUsers = (page-1)*pagesize
   
-  rank = (page-1)*pagesize
-  for id, xp, level in database.execute( "SELECT id, xp, level FROM users WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize, (page-1)*pagesize) ).fetchall():
-    rank += 1
+  data = database.execute( "SELECT id, xp, level FROM users WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize,no_skippedUsers) ).fetchall()
+  data = tuple(map(list,data))
+  
+  # generate the rank (difficult because of ties, especially ties starting before current page)
+  for i, [user_id, xp, level] in enumerate(data):
     
     try:
       if xp != oldxp or level != oldlvl:
-        showrank = rank
+        rank = no_skippedUsers+1 + i
     except:  # first run
-      showrank = get_user_rank(xp,level)
+      rank = get_user_rank(xp,level)
+    oldxp,oldlvl = xp,level
     
-    totalxp = get_totalxp(xp,level)
-    user = await get_user(id)
-    username = str(user) if user else f'<@{id}>'
+    data[i].append(rank)
+  
+  width_rank    = len(str( data[-1][3] ))
+  if is_xp_leaderboard:
+    width_totalxp = len(str( get_totalxp(data[0][1],data[0][2]) ))
+  else:
+    width_level   = len(str( data[0][2] ))
+    width_xp      = len(str( max( row[1] for row in data ) )) # man this would be so much easier with numpy
+    width_lvlupxp = len(str( LEVELUP_XP(data[0][2]) ))
+    
+  
+  chunks = [ f"**LEADERBOARD page {page}/{no_pages}**\n" ]
+  for user_id, xp, level, rank in data:
+    rank = intToWidth(rank,width_rank)
     
     if is_xp_leaderboard:
-      row = f"Rank {showrank}: {username} - {totalxp} XP\n"
+      totalxp = get_totalxp(xp,level)
+      row = f"`Rank {rank} - {intToWidth(totalxp,width_totalxp)} XP:` {await getUserName(user_id)}\n"
     else:
-      row = f"Rank {showrank}: {username} level {level} ({xp}/{LEVELUP_XP(level)})\n"
+      row = f"`Rank {rank} - Level {intToWidth(level,width_level)} ({intToWidth(xp,width_xp)}/{intToWidth(LEVELUP_XP(level),width_lvlupxp)}):` {await getUserName(user_id)}\n"
     
-    if strlen(chunk+row+"```") > DISCORD_CHAR_LIMIT:  # this row would make message too long, start new block
-      chunk += "```"
-      chunks.append(chunk)
-      chunk = "```"
+    if strlen(chunks[-1]+row) > DISCORD_CHAR_LIMIT:  # this row would make message too long, start new block
+      chunks.append("")
     
-    chunk += row
-    
-    oldxp,oldlvl = xp,level
-  
-  chunk += "```"
-  chunks.append(chunk)
+    chunks[-1] += row
   
   return chunks
 
@@ -150,14 +182,8 @@ async def leaderboard(message:  nextcord.Interaction,
 async def leaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
   log(f'!leaderboard {page} {pagesize}')
   
-  try: page = int(page)
-  except: page = 1
-  try: pagesize = int(pagesize)
-  except: pagesize = 10
-  
-  if page < 1: page = 1
-  if pagesize < 1: pagesize = 1
-  if pagesize > MAX_LEADERBOARD_SIZE: pagesize = MAX_LEADERBOARD_SIZE
+  page     = parseIntInput( page,     default= 1, min=1 )
+  pagesize = parseIntInput( pagesize, default=10, min=1, max=MAX_LEADERBOARD_SIZE )
   
   chunks = await get_leaderboard_msg( page, pagesize )
   
@@ -184,14 +210,8 @@ async def xpleaderboard(message:  nextcord.Interaction,
 async def xpleaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
   log(f'!xpleaderboard {page} {pagesize}')
   
-  try: page = int(page)
-  except: page = 1
-  try: pagesize = int(pagesize)
-  except: pagesize = 10
-  
-  if page < 1: page = 1
-  if pagesize < 1: pagesize = 1
-  if pagesize > MAX_LEADERBOARD_SIZE: pagesize = MAX_LEADERBOARD_SIZE
+  page     = parseIntInput( page,     default= 1, min=1 )
+  pagesize = parseIntInput( pagesize, default=10, min=1, max=MAX_LEADERBOARD_SIZE )
   
   chunks = await get_leaderboard_msg( page, pagesize, True )
   
@@ -206,18 +226,10 @@ async def get_rank_msg( user_id: int ) -> str:
   xp, level = get_userlevel(user_id)
   rank = get_user_rank(xp,level)
   
-  user = await get_user(user_id)
-  if check_snitchtome(user_id):
-    username = f'<@{user_id}>'
-  elif user:
-    username = f'`{user}`'
-  else:
-    username = f'`<@{user_id}>`'
-  
   if rank is None:
-    return f"User {username} is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
+    return f"User {await getUserName(user_id)} is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
   
-  return f"User {username} is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
+  return f"User {await getUserName(user_id)} is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
 
 @client.slash_command(guild_ids=BOT_SERVER_IDS, description='Get xp and level of yourself or another user')
 async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
@@ -261,18 +273,10 @@ async def get_xp_msg( user_id: int ) -> str:
   rank = get_user_rank(xp,level)
   totalxp = get_totalxp(xp,level)
   
-  user = await get_user(user_id)
-  if check_snitchtome(user_id):
-    username = f'<@{user_id}>'
-  elif user:
-    username = f'`{user}`'
-  else:
-    username = f'`<@{user_id}>`'
-  
   if rank is None:
-    return f"User {username} is currently unranked with {totalxp} XP"
+    return f"User {await getUserName(user_id)} is currently unranked with {totalxp} XP"
   
-  return f"User {username} is at rank {rank} with {totalxp} XP"
+  return f"User {await getUserName(user_id)} is at rank {rank} with {totalxp} XP"
 
 @client.slash_command(guild_ids=BOT_SERVER_IDS, description='Get total XP of yourself or another user')
 async def xp(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
@@ -376,6 +380,8 @@ async def snitchtome( message: nextcord.Interaction ) -> None:
 
 @client.listen('on_message')
 async def msg(message):
+  await operationCounterEEP(message)
+  
   author = message.author
   # log(f'got msg by {author.name}')
 
@@ -414,6 +420,26 @@ async def msg(message):
   if commitEvent.is_set():
     database.commit()
     commitEvent.clear()
+
+async def operationCounterEEP(message):
+  allowedEEPpercent = 0.2
+  
+  # only affect anith and test acount
+  if not ( message.author.id == 411317904081027072 or message.author.id == 933495055895912448 ):
+    return
+  
+  content = message.content
+  
+  # only affect messages that are primarily (>20%) eeps
+  if not len(content) < 4/allowedEEPpercent * content.lower().count('meep'):
+    return
+  
+  try:
+    emoji = [ emoji for emoji in await message.guild.fetch_emojis() if emoji.name == 'shut' ][0]
+  except: return
+  
+  await message.add_reaction(emoji)
+  log('Shut')
 
 
 # database.execute("DROP TABLE android_metadata;")  # clean up after my android sqlite editor
