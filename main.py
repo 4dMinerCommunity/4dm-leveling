@@ -2,7 +2,6 @@ import nextcord, nextcord.ext.commands
 from sqlite3 import connect 
 
 import time
-from datetime import datetime
 import re  # regex
 from typing import Optional
 # strlen = lambda string: len(string.encode('utf-8'))
@@ -383,9 +382,8 @@ async def msg(message):
   await operationCounterEEP(message)
   
   author = message.author
-  # log(f'got msg by {author.name}')
 
-  if author.bot: return  # ignore bots
+  # if author.bot: return  # ignore bots
   if usr_cooldowns.get(author.id, 0.0) > time.time():
     log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0.0) - time.time()}s remaining)')
     return # check cooldown
@@ -422,16 +420,19 @@ async def msg(message):
     commitEvent.clear()
 
 async def operationCounterEEP(message):
-  allowedEEPpercent = 0.2
+  eep = f'{chr(0x6d)}eep'  # the accursed word
+  allowedEEPpercent = 0.15
   
-  # only affect anith and test acount
-  if not ( message.author.id == 411317904081027072 or message.author.id == 933495055895912448 ):
-    return
+  # # only affect anith and test acount
+  # if not ( message.author.id == 411317904081027072 or message.author.id == 933495055895912448 ):
+  #   return
   
   content = message.content
+  content = re.sub("<:"+eep+":\\d{10,}>", eep, content)  # replace eep emojis with normal eeps for more realistic evaluation
+  log(content,message.content)
   
   # only affect messages that are primarily (>20%) eeps
-  if not len(content) < 4/allowedEEPpercent * content.lower().count('meep'):
+  if not len(content) < 4/allowedEEPpercent * content.lower().count( eep ):
     return
   
   try:
@@ -470,7 +471,7 @@ def prune_timeouts():
 commitEvent = threading.Event()
 schedule.every(5).minutes.do( lambda: commitEvent.set() )
 schedule.every(60).minutes.do( prune_timeouts )
-# schedule.every(5).seconds.do( lambda: print('Meep.') )  # Meep. (great for testing)
+# schedule.every(5).seconds.do( lambda: print('eep.') )  # eep. (great for testing)
 
 exitEvent = threading.Event()
 schedulerStoppedEvent = threading.Event()
