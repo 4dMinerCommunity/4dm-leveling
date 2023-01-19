@@ -1,10 +1,10 @@
 import nextcord, nextcord.ext.commands
+from nextcord import SlashOption as Option
 from sqlite3 import connect 
 
 import time
 from asyncio import create_task as unawait
 import re  # regex
-from typing import Optional
 
 from env import *  # api keys
 from settings import *
@@ -14,12 +14,14 @@ if not DEBUG: log = lambda *_: None  # disable log on release
 
 ############# CLIENT INITIALIZATION #############
 
-intents = nextcord.Intents.default()
-intents.message_content = True
+intents = nextcord.Intents.none()
+intents.guilds = True
 intents.members = True
-intents.typing = False
+# intents.emojis = True
+intents.guild_messages = True
+intents.message_content = True
 
-log(list(intents))
+log([ intent[0] for intent in intents if intent[1] ])
 client = nextcord.ext.commands.Bot( command_prefix='!', intents=intents, default_guild_ids=BOT_SERVER_IDS )
 
 ############# LIBRARY #############
@@ -27,16 +29,13 @@ client = nextcord.ext.commands.Bot( command_prefix='!', intents=intents, default
 # in case dc ever changes how they measure stringlength AGAIN
 def dcStrlen(string): return len(string)
 
-# get xp, level, ... of user_id, and create user entry if it doesn't exist
+# get ( xp, level )
 def get_userlevel(user_id):
-  
-  #check if user is in the db
-  if database.execute("SELECT id FROM users WHERE id = ?", (str(user_id),)).fetchone() is None:
-    database.execute("INSERT INTO users VALUES (?, ?, ?)", (str(user_id), 0, 0))
-  
-  xp, level = database.execute("SELECT xp, level FROM users WHERE id = ?", (str(user_id),) ).fetchone()
-  
-  return xp, level
+  return database.execute("SELECT xp, level FROM levels WHERE id = ?", (user_id,) ).fetchone() or (0,0)
+
+# save xp, level, ... of user_id
+def set_userlevel(user_id,xp,level):
+  database.execute("INSERT OR REPLACE INTO levels( id, xp, level ) VALUES (?, ?, ?)", (user_id, xp, level))
 
 def get_totalxp(xp,level):
   # yes I know you could get a direct math equation for that sum but then you need to manage 2 equations,
@@ -45,19 +44,16 @@ def get_totalxp(xp,level):
 
 # returns rank as int or None if unranked (level 0)
 def get_user_rank(xp,level):
-  # xp, level = get_userlevel(user_id)
   
   if level < 1:
     return None
   
-  rank = database.execute( "SELECT count(*)+1 FROM users WHERE level > ? OR ( level = ? AND xp > ? )", (level,level,xp) ).fetchone()[0]
-  
-  return rank
+  return database.execute( "SELECT count(*)+1 FROM levels WHERE level > ? OR ( level = ? AND xp > ? )", (level,level,xp) ).fetchone()[0]
 
-async def getUserName(user_id):
+async def getUserName(user_id,pingsetting="snitchtome"):
   user_id = int(user_id)  # you would not believe how many issues this caused, I wasted 3 hours on this shit. Fuck soft typing, fuck nextcord, fuck sqlite
   
-  if check_snitchtome(user_id):
+  if check_setting(pingsetting,user_id):
     return f'<@{user_id}>'
   
   # get from cache
@@ -71,7 +67,6 @@ async def getUserName(user_id):
   except:
     log(f'failed to fetch unknown user <@{user_id}>')
     return f'`<@{user_id}>`'
-  
 
 def parseIntInput(num,default,min=None,max=None):
   try: num = int(num)
@@ -93,7 +88,7 @@ def intToWidth(int,width):
 
 async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
   
-  no_users = database.execute( "SELECT COUNT(*) FROM users WHERE level > 0 " ).fetchone()[0]
+  no_users = database.execute( "SELECT COUNT(*) FROM levels WHERE level > 0 " ).fetchone()[0]
   no_pages = ( no_users + pagesize - 1 )//pagesize
   
   if page > no_pages:
@@ -101,20 +96,21 @@ async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool
   
   no_skippedUsers = (page-1)*pagesize
   
-  data = database.execute( "SELECT id, xp, level FROM users WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize,no_skippedUsers) ).fetchall()
+  data = database.execute( "SELECT id, xp, level FROM levels WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize,no_skippedUsers) ).fetchall()
   data = tuple(map(list,data))
   
   # generate the rank (difficult because of ties, especially ties starting before current page)
-  for i, [user_id, xp, level] in enumerate(data):
+  for internalrank, row in enumerate(data,start=no_skippedUsers+1):
     
+    _, xp, level = row
     try:
       if xp != oldxp or level != oldlvl:
-        rank = no_skippedUsers+1 + i
+        rank = internalrank
     except:  # first run
       rank = get_user_rank(xp,level)
     oldxp,oldlvl = xp,level
     
-    data[i].append(rank)
+    row.append(rank)
   
   width_rank    = len(str( data[-1][3] ))
   if is_xp_leaderboard:
@@ -143,20 +139,17 @@ async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool
   return chunks
 
 @client.slash_command(description="List the top ranked (most 'active') users")
-async def leaderboard(message:  nextcord.Interaction,
-  page: int = nextcord.SlashOption(name="page", required=False, default=1, min_value=1),
-  pagesize: int = nextcord.SlashOption(name="pagesize", required=False, default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE),
-) -> None:
+async def leaderboard(interaction, page: int = Option(default=1, min_value=1), pagesize: int = Option(default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE) ):
   log(f'/leaderboard {page} {pagesize}')
   
   chunks = await get_leaderboard_msg( page, pagesize )
   
-  await message.send(chunks.pop(0))
+  await interaction.send(chunks.pop(0))
   for chunk in chunks:
-    await message.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
+    await interaction.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
 
 @client.command(help="List the top ranked (most 'active') users")
-async def leaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
+async def leaderboard(message, page = None, pagesize = None ):
   log(f'!leaderboard {page} {pagesize}')
   
   page     = parseIntInput( page,     default= 1, min=1 )
@@ -171,20 +164,17 @@ async def leaderboard( message: nextcord.Interaction, page = None, pagesize = No
 ############# XPLEADERBOARD COMMAND #############
 
 @client.slash_command(description="List the top ranked (most 'active') users")
-async def xpleaderboard(message:  nextcord.Interaction,
-  page: int = nextcord.SlashOption(name="page", required=False, default=1, min_value=1),
-  pagesize: int = nextcord.SlashOption(name="pagesize", required=False, default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE),
-) -> None:
+async def xpleaderboard(interaction, page: int = Option(default=1, min_value=1), pagesize: int = Option(default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE) ):
   log(f'/xpleaderboard {page} {pagesize}')
   
   chunks = await get_leaderboard_msg( page, pagesize, True )
   
-  await message.send(chunks.pop(0))
+  await interaction.send(chunks.pop(0))
   for chunk in chunks:
-    await message.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !xpleaderboard doesn't. Fuck discord
+    await interaction.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !xpleaderboard doesn't. Fuck discord
 
 @client.command(help="List the top ranked (most 'active') users with their total XP")
-async def xpleaderboard( message: nextcord.Interaction, page = None, pagesize = None ):
+async def xpleaderboard(message, page = None, pagesize = None ):
   log(f'!xpleaderboard {page} {pagesize}')
   
   page     = parseIntInput( page,     default= 1, min=1 )
@@ -209,17 +199,17 @@ async def get_rank_msg( user_id: int ) -> str:
   return f"User {await getUserName(user_id)} is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
 
 @client.slash_command(description='Get xp and level of yourself or another user')
-async def rank(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
-  log(f'/rank {username}')
+async def rank(interaction, user: nextcord.Member = Option(required=False,description='set to query for user, or leave empty')):
+  log(f'/rank {user}')
   
-  if username is None:
-    queried_user_id = message.user.id
+  if user is None:
+    queried_user_id = interaction.user.id
   else:
-    queried_user_id = username.id
+    queried_user_id = user.id
   
   msg = await get_rank_msg( int(queried_user_id) )
   
-  await message.send(msg)
+  await interaction.send(msg)
 
 @client.command(help="Get xp and level of yourself or another user")
 async def rank(message, username = None ):
@@ -256,17 +246,17 @@ async def get_xp_msg( user_id: int ) -> str:
   return f"User {await getUserName(user_id)} is at rank {rank} with {totalxp} XP"
 
 @client.slash_command(description='Get total XP of yourself or another user')
-async def xp(message:  nextcord.Interaction, username: Optional[nextcord.Member] = nextcord.SlashOption(name="user", required=False, description='set to query for user, or leave empty')) -> None:
-  log(f'/xp {username}')
+async def xp(interaction, user: nextcord.Member = Option(required=False,description='set to query for user, or leave empty')):
+  log(f'/xp {user}')
   
-  if username is None:
-    queried_user_id = message.user.id
+  if user is None:
+    queried_user_id = interaction.user.id
   else:
-    queried_user_id = username.id
+    queried_user_id = user.id
   
   msg = await get_xp_msg( int(queried_user_id) )
   
-  await message.send(msg)
+  await interaction.send(msg)
 
 @client.command(help="Get total XP of yourself or another user")
 async def xp(message, username = None ):
@@ -289,69 +279,42 @@ async def xp(message, username = None ):
   
   await message.reply(msg)
 
-############# PINGME COMMAND #############
+############# SETTINGS MANAGEMENT #############
 
-# returns True if user has choosen to get pinged, False if they haven't
-def pinguser( user_id: int ) -> bool:
-  return database.execute( "SELECT id FROM ping_users WHERE id = ?", (user_id,) ).fetchone() is not None
+# creates accompanying tables with "_users" appended to the settings name
+usersettings = {
+  "pingme": { 'description':"Toggle getting pinged when you level up (default is off)",
+    'onmessage':"you will now get pinged upon levelup", 'offmessage':"you will no longer get pinged on levelup" },
+  "snitchtome": { 'description':"Toggle getting pinged when someone queries your rank (default is off)",
+    'onmessage':"I will now snitch to you when someone queries your rank", 'offmessage':"you will no longer get notified when someone queries your rank" },
+}
 
-async def do_pingme( user_id: int ) -> str:
-  user_id = int(user_id)
-  
-  if pinguser(user_id):
-    database.execute( "DELETE FROM ping_users WHERE id = ?", (user_id,) )
-    return "you will no longer get pinged on levelup"
+def check_setting( setting: str, user_id ) -> bool:
+  return database.execute( f"SELECT id FROM {setting}_users WHERE id = ?", (user_id,) ).fetchone() is not None
+
+def toggle_setting( setting: str, user_id ) -> str:
+  if not check_setting(setting,user_id):
+    database.execute( f"INSERT INTO {setting}_users VALUES (?)", (user_id,) )
+    return usersettings[setting]['onmessage']
   else:
-    database.execute( "INSERT INTO ping_users VALUES (?)", (user_id,) )
-    return "you will now get pinged upon levelup"
+    database.execute( f"DELETE FROM {setting}_users WHERE id = ?", (user_id,) )
+    return usersettings[setting]['offmessage']
 
-@client.slash_command(description='Toggle getting pinged when you level up (default is off)')
-async def pingme( message: nextcord.Interaction ) -> None:
-  log(f'/pingme {message.user}')
+# needs to be function so the toggle functions are local scope and don't get overwritten. It's a python limitation
+def register_toggle_command(setting):
   
-  msg = await do_pingme( message.user.id )
+  @client.slash_command( setting, usersettings[setting]['description'] )
+  async def toggle_slashcommand(interaction):
+    log(f"/{setting} {interaction.user}")
+    await interaction.send( toggle_setting( setting, interaction.user.id ) )
   
-  await message.send(msg)
+  @client.command( name=setting, help=usersettings[setting]['description'] )
+  async def toggle_command(message):
+    log(f"!{setting} {message.author}")
+    await message.reply( toggle_setting( setting, message.author.id ) )
 
-@client.command(help='Toggle getting pinged when you level up (default is off)')
-async def pingme( message: nextcord.Interaction ) -> None:
-  log(f'!pingme {message.author}')
-  
-  msg = await do_pingme( message.author.id )
-  
-  await message.reply(msg)
-
-############# SNITCHTOME COMMAND #############
-
-# returns True if user has choosen to get pinged, False if they haven't
-def check_snitchtome( user_id: int ) -> bool:
-  return database.execute( "SELECT id FROM snitchtome_users WHERE id = ?", (user_id,) ).fetchone() is not None
-
-async def toggle_snitchtome( user_id: int ) -> str:
-  user_id = int(user_id)
-  
-  if check_snitchtome(user_id):
-    database.execute( "DELETE FROM snitchtome_users WHERE id = ?", (user_id,) )
-    return "you will no longer get notified when someone queries your rank"
-  else:
-    database.execute( "INSERT INTO snitchtome_users VALUES (?)", (user_id,) )
-    return "I will now snitch to you when someone queries your rank"
-
-@client.slash_command(description='Toggle getting pinged when someone queries your rank (default is off)')
-async def snitchtome( message: nextcord.Interaction ) -> None:
-  log(f'/snitchtome {message.user}')
-  
-  msg = await toggle_snitchtome( message.user.id )
-  
-  await message.send(msg)
-
-@client.command(help='Toggle getting pinged when someone queries your rank (default is off)')
-async def snitchtome( message: nextcord.Interaction ) -> None:
-  log(f'!snitchtome {message.author}')
-  
-  msg = await toggle_snitchtome( message.author.id )
-  
-  await message.reply(msg)
+for setting in usersettings:
+  register_toggle_command(setting)
 
 ############# XP LISTENER AND OTHER MESSAGE LISTENERS #############
 
@@ -359,8 +322,10 @@ usr_cooldowns = {}
 @client.listen('on_message')
 async def msg(message):
   author = message.author
-
-  # if author.bot: return  # ignore bots
+  
+  # ignore bots
+  if author.bot:
+    return
   
   if usr_cooldowns.get(author.id, 0.0) > time.time():
     log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0.0) - time.time()}s remaining)')
@@ -377,7 +342,7 @@ async def msg(message):
     xp -= LEVELUP_XP(level)  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
     level += 1
   
-  database.execute("UPDATE users SET xp = ?, level = ? WHERE id = ?;", (xp, level, str(author.id)))
+  set_userlevel(author.id,xp,level)
   
   
   log(f'got msg by {author} (xp: {xp}, lvl: {level})')
@@ -387,7 +352,7 @@ async def msg(message):
     xp, level = get_userlevel(author.id)  # jsut to be sure, yaknow
     rank = get_user_rank(xp,level)  # should never be None since user just got to at least level 1
     
-    username = f'<@{author.id}>' if pinguser(author.id) else f'`{author}`'  # ping if set to do so
+    username = await getUserName(author.id,pingsetting='pingme')
     
     unawait( client.get_partial_messageable(BOT_CHANNEL_ID).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}") )
     
@@ -426,6 +391,8 @@ def prune_timeouts():
 cronjobs = [
   { 'name': "db autosave",        'frequencySeconds':  300, 'nextrun': 0, 'function': lambda:database.commit() },
   { 'name': "clear old timeouts", 'frequencySeconds': 3600, 'nextrun': 0, 'function': prune_timeouts },
+  { 'name': "update activity",    'frequencySeconds':   60, 'nextrun': 0, 'function': lambda:
+    unawait( client.change_presence(activity=nextcord.Activity( name=f"{sum(guild.member_count for guild in client.guilds)} watchers", type=nextcord.ActivityType.playing )) ) },
 ]
 
 @client.listen('on_ready')
@@ -451,24 +418,36 @@ async def cron():
 
 database = connect("sqlite.db")
 
-database.execute("""CREATE TABLE IF NOT EXISTS
-  users (
-    id varchar(400),
-    level int,
-    xp int
+database.execute("""CREATE TABLE IF NOT EXISTS users (
+  id UNSIGNED BIG INT PRIMARY KEY,
+  level UNSIGNED BIG INT,
+  xp UNSIGNED BIG INT
   );
 """)
-database.execute("""CREATE TABLE IF NOT EXISTS
-  ping_users (
+
+database.execute("""CREATE TABLE IF NOT EXISTS levels (
+  id UNSIGNED BIG INT PRIMARY KEY,
+  level UNSIGNED BIG INT,
+  xp UNSIGNED BIG INT
+  );
+""")
+
+database.execute(" INSERT INTO levels (id,level,xp) SELECT id,level,xp FROM users ")
+database.execute(" DROP TABLE users ")
+
+for setting in usersettings:
+  database.execute(f"""CREATE TABLE IF NOT EXISTS {setting}_users (
     id UNSIGNED BIG INT PRIMARY KEY
-  );
-""")
-database.execute("""CREATE TABLE IF NOT EXISTS
-  snitchtome_users (
-    id UNSIGNED BIG INT PRIMARY KEY
-  );
-""")
-# database.execute("UPDATE users SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
+    );
+  """)
+
+database.execute(" CREATE TABLE IF NOT EXISTS ping_users (id UNSIGNED BIG INT PRIMARY KEY) ")
+database.execute(" INSERT INTO pingme_users (id) SELECT id FROM ping_users ")
+database.execute(" DROP TABLE ping_users ")
+
+log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('table','view') ").fetchall())
+
+# database.execute("UPDATE levels SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
 
 ############# STARTUP AND SHUTDOWN #############
 
