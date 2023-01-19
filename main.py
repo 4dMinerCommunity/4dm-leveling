@@ -327,31 +327,28 @@ async def msg(message):
   if author.bot:
     return
   
-  if usr_cooldowns.get(author.id, 0.0) > time.time():
-    log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0.0) - time.time()}s remaining)')
-    return # check cooldown
+  # check cooldown
+  if usr_cooldowns.get(author.id, 0) > time.time():
+    log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0) - time.time()}s remaining)')
+    return
   usr_cooldowns[author.id] = time.time() + TIMEOUT
   
   
   xp, level = get_userlevel(author.id)
   
   xp += XP_GAIN_AMOUNT()
-  leveledup = xp >= LEVELUP_XP(level)
+  leveled_up = xp >= LEVELUP_XP(level)
   
-  if leveledup:
+  if leveled_up:
     xp -= LEVELUP_XP(level)  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
     level += 1
   
-  set_userlevel(author.id,xp,level)
-  
-  
+  set_userlevel(author.id, xp, level )
   log(f'got msg by {author} (xp: {xp}, lvl: {level})')
   
-  if leveledup:
+  if leveled_up:
     
-    xp, level = get_userlevel(author.id)  # jsut to be sure, yaknow
     rank = get_user_rank(xp,level)  # should never be None since user just got to at least level 1
-    
     username = await getUserName(author.id,pingsetting='pingme')
     
     unawait( client.get_partial_messageable(BOT_CHANNEL_ID).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}") )
@@ -391,7 +388,7 @@ def prune_timeouts():
 cronjobs = [
   { 'name': "db autosave",        'frequencySeconds':  300, 'nextrun': 0, 'function': lambda:database.commit() },
   { 'name': "clear old timeouts", 'frequencySeconds': 3600, 'nextrun': 0, 'function': prune_timeouts },
-  { 'name': "update activity",    'frequencySeconds':   60, 'nextrun': 0, 'function': lambda:
+  { 'name': "update activity",    'frequencySeconds':   59, 'nextrun': 0, 'function': lambda:
     unawait( client.change_presence(activity=nextcord.Activity( name=f"{sum(guild.member_count for guild in client.guilds)} watchers", type=nextcord.ActivityType.playing )) ) },
 ]
 
@@ -418,33 +415,17 @@ async def cron():
 
 database = connect("sqlite.db")
 
-database.execute("""CREATE TABLE IF NOT EXISTS users (
-  id UNSIGNED BIG INT PRIMARY KEY,
-  level UNSIGNED BIG INT,
-  xp UNSIGNED BIG INT
-  );
-""")
-
 database.execute("""CREATE TABLE IF NOT EXISTS levels (
   id UNSIGNED BIG INT PRIMARY KEY,
   level UNSIGNED BIG INT,
   xp UNSIGNED BIG INT
   );
 """)
-
-database.execute(" INSERT INTO levels (id,level,xp) SELECT id,level,xp FROM users ")
-database.execute(" DROP TABLE users ")
-
 for setting in usersettings:
   database.execute(f"""CREATE TABLE IF NOT EXISTS {setting}_users (
     id UNSIGNED BIG INT PRIMARY KEY
     );
   """)
-
-database.execute(" CREATE TABLE IF NOT EXISTS ping_users (id UNSIGNED BIG INT PRIMARY KEY) ")
-database.execute(" INSERT INTO pingme_users (id) SELECT id FROM ping_users ")
-database.execute(" DROP TABLE ping_users ")
-
 log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('table','view') ").fetchall())
 
 # database.execute("UPDATE levels SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
