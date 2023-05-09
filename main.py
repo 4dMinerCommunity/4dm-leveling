@@ -1,10 +1,13 @@
+#!/usr/bin/python3
+
 import nextcord, nextcord.ext.commands
 from nextcord import SlashOption as Option
 from sqlite3 import connect 
 
-import time
+from time import time
 from asyncio import create_task as unawait
 import re  # regex
+import unicodedata
 
 from env import *  # api keys
 from settings import *
@@ -50,24 +53,6 @@ def get_user_rank(xp,level):
   
   return database.execute( "SELECT count(*)+1 FROM levels WHERE level > ? OR ( level = ? AND xp > ? )", (level,level,xp) ).fetchone()[0]
 
-async def getUserName(user_id,pingsetting="snitchtome"):
-  user_id = int(user_id)  # you would not believe how many issues this caused, I wasted 3 hours on this shit. Fuck soft typing, fuck nextcord, fuck sqlite
-  
-  if check_setting(pingsetting,user_id):
-    return f'<@{user_id}>'
-  
-  # get from cache
-  if client.get_user(user_id):
-    return f'`{client.get_user(user_id)}`'
-  
-  # get fresh
-  try:
-    log(f'trying to fetch unknown user <@{user_id}>')
-    return f'`{await client.fetch_user(user_id)}`'
-  except:
-    log(f'failed to fetch unknown user <@{user_id}>')
-    return f'`<@{user_id}>`'
-
 def parseIntInput(num,default,min=None,max=None):
   try: num = int(num)
   except: num = default
@@ -84,9 +69,22 @@ def intToWidth(int,width):
   int = (width-len(int))*' ' + int
   return int
 
+async def commandRespond(call_env,response,mentions):
+  if isinstance(call_env, nextcord.ext.commands.Context):
+    await call_env.reply(response,allowed_mentions=mentions)
+  else:
+    await call_env.send(response,allowed_mentions=mentions)
+
+async def printChunked(call_env,chunks,mentions):
+  
+  await commandRespond(call_env,chunks.pop(0),mentions)
+  
+  for chunk in chunks:
+    await call_env.channel.send(chunk,allowed_mentions=mentions)
+
 ############# LEADERBOARD COMMAND #############
 
-async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
+def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
   
   no_users = database.execute( "SELECT COUNT(*) FROM levels WHERE level > 0 " ).fetchone()[0]
   no_pages = ( no_users + pagesize - 1 )//pagesize
@@ -121,32 +119,32 @@ async def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool
     width_lvlupxp = len(str( LEVELUP_XP(data[0][2]) ))
     
   
+  pings = []
   chunks = [ f"**LEADERBOARD page {page}/{no_pages}**\n" ]
   for user_id, xp, level, rank in data:
     rank = intToWidth(rank,width_rank)
     
     if is_xp_leaderboard:
       totalxp = get_totalxp(xp,level)
-      row = f"`Rank {rank} - {intToWidth(totalxp,width_totalxp)} XP:` {await getUserName(user_id)}\n"
+      row = f"`Rank {rank} - {intToWidth(totalxp,width_totalxp)} XP:` <@{user_id}>\n"
     else:
-      row = f"`Rank {rank} - Level {intToWidth(level,width_level)} ({intToWidth(xp,width_xp)}/{intToWidth(LEVELUP_XP(level),width_lvlupxp)}):` {await getUserName(user_id)}\n"
+      row = f"`Rank {rank} - Level {intToWidth(level,width_level)} ({intToWidth(xp,width_xp)}/{intToWidth(LEVELUP_XP(level),width_lvlupxp)}):` <@{user_id}>\n"
+    
+    if check_setting('snitchtome',user_id):
+      pings.append(user_id)
     
     if dcStrlen(chunks[-1]+row) > DISCORD_CHAR_LIMIT:  # this row would make message too long, start new block
       chunks.append("")
     
     chunks[-1] += row
   
-  return chunks
+  return chunks, nextcord.AllowedMentions(replied_user=False,users=[nextcord.Object(user_id) for user_id in pings])
 
 @client.slash_command(description="List the top ranked (most 'active') users")
 async def leaderboard(interaction, page: int = Option(default=1, min_value=1), pagesize: int = Option(default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE) ):
   log(f'/leaderboard {page} {pagesize}')
   
-  chunks = await get_leaderboard_msg( page, pagesize )
-  
-  await interaction.send(chunks.pop(0))
-  for chunk in chunks:
-    await interaction.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !leaderboard doesn't. Fuck discord
+  await printChunked( interaction, *get_leaderboard_msg( page, pagesize ) )
 
 @client.command(help="List the top ranked (most 'active') users")
 async def leaderboard(message, page = None, pagesize = None ):
@@ -155,11 +153,7 @@ async def leaderboard(message, page = None, pagesize = None ):
   page     = parseIntInput( page,     default= 1, min=1 )
   pagesize = parseIntInput( pagesize, default=10, min=1, max=MAX_LEADERBOARD_SIZE )
   
-  chunks = await get_leaderboard_msg( page, pagesize )
-  
-  await message.reply(chunks.pop(0))
-  for chunk in chunks:
-    await message.channel.send(chunk)
+  await printChunked( message, *get_leaderboard_msg( page, pagesize ) )
 
 ############# XPLEADERBOARD COMMAND #############
 
@@ -167,11 +161,7 @@ async def leaderboard(message, page = None, pagesize = None ):
 async def xpleaderboard(interaction, page: int = Option(default=1, min_value=1), pagesize: int = Option(default=10, min_value=1, max_value=MAX_LEADERBOARD_SIZE) ):
   log(f'/xpleaderboard {page} {pagesize}')
   
-  chunks = await get_leaderboard_msg( page, pagesize, True )
-  
-  await interaction.send(chunks.pop(0))
-  for chunk in chunks:
-    await interaction.channel.send(chunk)  # for some reason this sometimes crashes when called right after start. The !xpleaderboard doesn't. Fuck discord
+  await printChunked( interaction, *get_leaderboard_msg( page, pagesize, True ) )
 
 @client.command(help="List the top ranked (most 'active') users with their total XP")
 async def xpleaderboard(message, page = None, pagesize = None ):
@@ -180,23 +170,21 @@ async def xpleaderboard(message, page = None, pagesize = None ):
   page     = parseIntInput( page,     default= 1, min=1 )
   pagesize = parseIntInput( pagesize, default=10, min=1, max=MAX_LEADERBOARD_SIZE )
   
-  chunks = await get_leaderboard_msg( page, pagesize, True )
-  
-  await message.reply(chunks.pop(0))
-  for chunk in chunks:
-    await message.channel.send(chunk)
+  await printChunked( message, *get_leaderboard_msg( page, pagesize, True ) )
 
 ############# RANK COMMAND #############
 
-async def get_rank_msg( user_id: int ) -> str:
+def get_rank_msg( user_id: int ) -> str:
   
   xp, level = get_userlevel(user_id)
   rank = get_user_rank(xp,level)
   
-  if rank is None:
-    return f"User {await getUserName(user_id)} is currently unranked ({xp}/{LEVELUP_XP(level)} XP)"
+  mention = nextcord.AllowedMentions(users=check_setting('snitchtome',user_id))
   
-  return f"User {await getUserName(user_id)} is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)"
+  if rank is None:
+    return f"User <@{user_id}> is currently unranked ({xp}/{LEVELUP_XP(level)} XP)", mention
+  
+  return f"User <@{user_id}> is at rank {rank} with level {level} ({xp}/{LEVELUP_XP(level)} XP)", mention
 
 @client.slash_command(description='Get xp and level of yourself or another user')
 async def rank(interaction, user: nextcord.Member = Option(required=False,description='set to query for user, or leave empty')):
@@ -207,9 +195,7 @@ async def rank(interaction, user: nextcord.Member = Option(required=False,descri
   else:
     queried_user_id = user.id
   
-  msg = await get_rank_msg( int(queried_user_id) )
-  
-  await interaction.send(msg)
+  await commandRespond( interaction, *get_rank_msg(queried_user_id) )
 
 @client.command(help="Get xp and level of yourself or another user")
 async def rank(message, username = None ):
@@ -228,22 +214,22 @@ async def rank(message, username = None ):
   else:
     queried_user_id = message.author.id
   
-  msg = await get_rank_msg( int(queried_user_id) )
-  
-  await message.reply(msg)
+  await commandRespond( message, *get_rank_msg(queried_user_id) )
 
 ############# XPRANK COMMAND #############
 
-async def get_xp_msg( user_id: int ) -> str:
+def get_xp_msg( user_id: int ) -> str:
   
   xp, level = get_userlevel(user_id)
   rank = get_user_rank(xp,level)
   totalxp = get_totalxp(xp,level)
   
-  if rank is None:
-    return f"User {await getUserName(user_id)} is currently unranked with {totalxp} XP"
+  mention = nextcord.AllowedMentions(users=check_setting('snitchtome',user_id))
   
-  return f"User {await getUserName(user_id)} is at rank {rank} with {totalxp} XP"
+  if rank is None:
+    return f"User <@{user_id}> is currently unranked with {totalxp} XP", mention
+  
+  return f"User <@{user_id}> is at rank {rank} with {totalxp} XP", mention
 
 @client.slash_command(description='Get total XP of yourself or another user')
 async def xp(interaction, user: nextcord.Member = Option(required=False,description='set to query for user, or leave empty')):
@@ -254,9 +240,7 @@ async def xp(interaction, user: nextcord.Member = Option(required=False,descript
   else:
     queried_user_id = user.id
   
-  msg = await get_xp_msg( int(queried_user_id) )
-  
-  await interaction.send(msg)
+  await commandRespond( interaction, *get_xp_msg(queried_user_id) )
 
 @client.command(help="Get total XP of yourself or another user")
 async def xp(message, username = None ):
@@ -275,9 +259,31 @@ async def xp(message, username = None ):
   else:
     queried_user_id = message.author.id
   
-  msg = await get_xp_msg( int(queried_user_id) )
+  await commandRespond( message, *get_xp_msg(queried_user_id) )
+
+############# EXPORT DATA COMMAND #############
+
+files = ['sqlite.db']
+
+@client.slash_command(description="Export the datafiles of 4D Leveling")
+async def export(interaction):
+  log(f'/export')
   
-  await message.reply(msg)
+  for filename in files:
+    with open(filename,'rb') as file:
+      dcfile = nextcord.File(file,force_close=True)
+    
+    await interaction.send(file=dcfile)
+
+@client.command(help="Export the datafiles of 4D Leveling")
+async def export(context):
+  log(f'!export')
+  
+  for filename in files:
+    with open(filename,'rb') as file:
+      dcfile = nextcord.File(file,force_close=True)
+    
+    await context.reply(file=dcfile)
 
 ############# SETTINGS MANAGEMENT #############
 
@@ -322,19 +328,20 @@ usr_cooldowns = {}
 @client.listen('on_message')
 async def msg(message):
   author = message.author
+  uid = author.id
   
   # ignore bots
   if author.bot:
     return
   
   # check cooldown
-  if usr_cooldowns.get(author.id, 0) > time.time():
-    log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(author.id, 0) - time.time()}s remaining)')
+  if usr_cooldowns.get(uid, 0) > time():
+    log(f'skipped msg by {author.name} due to timeout ({usr_cooldowns.get(uid, 0) - time()}s remaining)')
     return
-  usr_cooldowns[author.id] = time.time() + TIMEOUT
+  usr_cooldowns[uid] = time() + TIMEOUT
   
   
-  xp, level = get_userlevel(author.id)
+  xp, level = get_userlevel(uid)
   
   xp += XP_GAIN_AMOUNT()
   leveled_up = xp >= LEVELUP_XP(level)
@@ -343,69 +350,66 @@ async def msg(message):
     xp -= LEVELUP_XP(level)  # say levelup is 1000 xp and user has 1005 xp, they should still have 5 xp after levelup
     level += 1
   
-  set_userlevel(author.id, xp, level )
+  set_userlevel(uid, xp, level )
   log(f'got msg by {author} (xp: {xp}, lvl: {level})')
   
   if leveled_up:
     
     rank = get_user_rank(xp,level)  # should never be None since user just got to at least level 1
-    username = await getUserName(author.id,pingsetting='pingme')
+    ping = nextcord.AllowedMentions(users=check_setting('pingme',uid))
     
-    unawait( client.get_partial_messageable(BOT_CHANNEL_ID).send(f"{username} leveled up to {level}!!  They are currently ranked {rank}") )
+    unawait( client.get_partial_messageable(BOT_CHANNEL_ID).send(f"<@{uid}> leveled up to {level}!!  They are currently ranked {rank}",allowed_mentions=ping) )
     
     print(f'{author} leveled up! (xp: {xp}, lvl: {level})')
+
+############# STOP THE EEPS #############
 
 @client.listen('on_message')
 async def operationCounterEEP(message):
   eep = f'{chr(0x6d)}eep'  # the accursed word
   allowedEEPpercent = 0.15
   
-  # # only affect anith and test acount
-  # if not ( message.author.id == 411317904081027072 or message.author.id == 933495055895912448 ):
-  #   return
-  
   content = message.content
   content = re.sub("<:"+eep+":\\d{10,}>", eep, content)  # replace eep emojis with normal eeps for more realistic evaluation
+  content = "".join(ch for ch in content if unicodedata.category(ch) not in {'Cf','Mn'})  # remove zero width characters
+  content = content.lower().replace('е','e').replace('р','p')  # don't get fooled by cyrillics
   
-  # only affect messages that are primarily (>20%) eeps
-  if not len(content) < 4/allowedEEPpercent * content.lower().count( eep ):
+  # only affect messages that are primarily (> allowedEEPpercent) eeps
+  if not len(content)*allowedEEPpercent < len(eep) * content.count( eep ):
     return
   
-  try:
-    emoji = [ emoji for emoji in await message.guild.fetch_emojis() if emoji.name == 'shut' ][0]
-  except: return
-  
-  await message.add_reaction(emoji)
+  await message.add_reaction( nextcord.utils.get(message.guild.emojis,name='shut') )
   log('Shut')
 
 ############# CRON #############
 
-def prune_timeouts():
-  global usr_cooldowns  # do atomic swap of dict to prevent thread issues
-  usr_cooldowns = { id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time.time() }  # only keep timeouts in the future
-
-# minimum frequency is 1 minute
+cron_minfreq = 60  # cron checks for due tasks every this many seconds
 cronjobs = [
-  { 'name': "db autosave",        'frequencySeconds':  300, 'nextrun': 0, 'function': lambda:database.commit() },
-  { 'name': "clear old timeouts", 'frequencySeconds': 3600, 'nextrun': 0, 'function': prune_timeouts },
-  { 'name': "update activity",    'frequencySeconds':   59, 'nextrun': 0, 'function': lambda:
-    unawait( client.change_presence(activity=nextcord.Activity( name=f"{sum(guild.member_count for guild in client.guilds)} watchers", type=nextcord.ActivityType.playing )) ) },
+  { 'name': "db autosave",        'frequencySeconds':  300, 'function': lambda:database.commit() },
+  { 'name': "clear old timeouts", 'frequencySeconds': 3600, 'function': lambda:
+    globals().__setitem__('usr_cooldowns',{ id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time() })
+  },
+  { 'name': "update activity",    'frequencySeconds':   60, 'function': lambda: unawait(
+    client.change_presence(activity=nextcord.Activity( type=nextcord.ActivityType.playing, name=f"{sum(guild.member_count for guild in client.guilds)} watchers" ))
+  )},
 ]
 
 @client.listen('on_ready')
 async def cron():
+  client.remove_listener( cron, 'on_ready' )  # stop more crons spawning on connection loss & restore
+  
   print('Ready. Starting internal Cron')
   
   while not client.is_closed():  # check is_closed in case we missed the on_close event
     
     for cronjob in cronjobs:
-      if cronjob['nextrun'] <= time.time():
-        cronjob['nextrun'] = time.time() + cronjob['frequencySeconds']
+      if cronjob.get('nextrun',0) <= time():
+        cronjob['nextrun'] = time() + cronjob['frequencySeconds'] - cron_minfreq/10  # some leeway for rounding etc.
         cronjob['function']()
         log(f"ran {cronjob['name']}")
     
     try:
-      if not client.is_closed(): await client.wait_for( 'close', timeout=60 )
+      if not client.is_closed(): await client.wait_for( 'close', timeout=cron_minfreq )
       break
     except: pass
   
@@ -428,7 +432,6 @@ for setting in usersettings:
   """)
 log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('table','view') ").fetchall())
 
-# database.execute("UPDATE levels SET xp = 90, level = 0 WHERE id = 933496023916093502;")  # my testing account (Greenjard)
 
 ############# STARTUP AND SHUTDOWN #############
 
