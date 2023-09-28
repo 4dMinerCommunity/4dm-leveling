@@ -2,8 +2,7 @@
 
 import nextcord, nextcord.ext.commands
 from nextcord import SlashOption as Option
-from sqlite3 import connect 
-
+import pymongo
 from time import time
 from asyncio import create_task as unawait
 import re  # regex
@@ -34,24 +33,48 @@ def dcStrlen(string): return len(string)
 
 # get ( xp, level )
 def get_userlevel(user_id):
-  return database.execute("SELECT xp, level FROM levels WHERE id = ?", (user_id,) ).fetchone() or (0,0)
+    user_data = database["levels"].find_one({"id": user_id})
+    if user_data:
+        xp = user_data.get("xp", 0)
+        level = user_data.get("level", 0)
+        return xp, level
+    else:
+        return 0, 0
 
 # save xp, level, ... of user_id
-def set_userlevel(user_id,xp,level):
-  database.execute("INSERT OR REPLACE INTO levels( id, xp, level ) VALUES (?, ?, ?)", (user_id, xp, level))
+def set_userlevel(user_id, xp, level):
+    user_data = {
+        "id": user_id,
+        "xp": xp,
+        "level": level
+    }
+    database["levels"].update_one({"id": user_id}, {"$set": user_data}, upsert=True)
 
 def get_totalxp(xp,level):
   # yes I know you could get a direct math equation for that sum but then you need to manage 2 equations,
   # here you can just change LEVELUP_XP to whatever. The runtime difference is negligible
   return xp + sum( LEVELUP_XP(lvl) for lvl in range(level) )
 
+
 # returns rank as int or None if unranked (level 0)
-def get_user_rank(xp,level):
-  
-  if level < 1:
-    return None
-  
-  return database.execute( "SELECT count(*)+1 FROM levels WHERE level > ? OR ( level = ? AND xp > ? )", (level,level,xp) ).fetchone()[0]
+def get_user_rank(xp, level):
+    if level < 1:
+        return None
+
+    # Use aggregation to calculate the user's rank
+    pipeline = [
+        {"$match": {"$or": [{"level": {"$gt": level}}, {"$and": [{"level": level}, {"xp": {"$gt": xp}}]}]}},
+        {"$group": {"_id": None, "count": {"$sum": 1}}},
+    ]
+
+    result = database["users"].aggregate(pipeline)
+
+    try:
+        rank = next(result)["count"] + 1
+    except StopIteration:
+        rank = 1
+
+    return rank
 
 def parseIntInput(num,default,min=None,max=None):
   try: num = int(num)
@@ -86,16 +109,24 @@ async def printChunked(call_env,chunks,mentions):
 
 def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
   
-  no_users = database.execute( "SELECT COUNT(*) FROM levels WHERE level > 0 " ).fetchone()[0]
-  no_pages = ( no_users + pagesize - 1 )//pagesize
+  count = database["levels"].count_documents({"level": {"$gt": 0}}) 
+  
+  no_pages = ( count + pagesize - 1 )//pagesize
   
   if page > no_pages:
     page = no_pages
   
   no_skippedUsers = (page-1)*pagesize
   
-  data = database.execute( "SELECT id, xp, level FROM levels WHERE level > 0 ORDER BY level DESC, xp DESC, id ASC LIMIT ? OFFSET ?", (pagesize,no_skippedUsers) ).fetchall()
-  data = tuple(map(list,data))
+  pipeline = [
+      {"$match": {"level": {"$gt": 0}}},  # Filter users with level > 0
+      {"$sort": {"level": -1, "xp": -1, "id": 1}},  # Sort by level descending, XP descending, and ID ascending
+      {"$skip": no_skippedUsers},  # Skip the specified number of users
+      {"$limit": pagesize}  # Limit the results to the specified page size
+  ]
+
+  data = list(database["levels"].aggregate(pipeline))  
+  data = [[user["id"], user["xp"], user["level"]] for user in data]
   
   # generate the rank (difficult because of ties, especially ties starting before current page)
   for internalrank, row in enumerate(data,start=no_skippedUsers+1):
@@ -261,50 +292,43 @@ async def xp(message, username = None ):
   
   await commandRespond( message, *get_xp_msg(queried_user_id) )
 
-############# EXPORT DATA COMMAND #############
 
-files = ['sqlite.db']
-
-@client.slash_command(description="Export the datafiles of 4D Leveling")
-async def export(interaction):
-  log(f'/export')
-  
-  for filename in files:
-    with open(filename,'rb') as file:
-      dcfile = nextcord.File(file,force_close=True)
-    
-    await interaction.send(file=dcfile)
-
-@client.command(help="Export the datafiles of 4D Leveling")
-async def export(context):
-  log(f'!export')
-  
-  for filename in files:
-    with open(filename,'rb') as file:
-      dcfile = nextcord.File(file,force_close=True)
-    
-    await context.reply(file=dcfile)
 
 ############# SETTINGS MANAGEMENT #############
 
-# creates accompanying tables with "_users" appended to the settings name
 usersettings = {
-  "pingme": { 'description':"Toggle getting pinged when you level up (default is off)",
-    'onmessage':"you will now get pinged upon levelup", 'offmessage':"you will no longer get pinged on levelup" },
-  "snitchtome": { 'description':"Toggle getting pinged when someone queries your rank (default is off)",
-    'onmessage':"I will now snitch to you when someone queries your rank", 'offmessage':"you will no longer get notified when someone queries your rank" },
+    "pingme": {
+        'description': "Toggle getting pinged when you level up (default is off)",
+        'onmessage': "you will now get pinged upon levelup",
+        'offmessage': "you will no longer get pinged on levelup"
+    },
+    "snitchtome": {
+        'description': "Toggle getting pinged when someone queries your rank (default is off)",
+        'onmessage': "I will now snitch to you when someone queries your rank",
+        'offmessage': "you will no longer get notified when someone queries your rank"
+    },
 }
+# creates accompanying tables with "_users" appended to the settings name# Function to check if a setting is enabled for a user in MongoDB
+def check_setting(setting: str, user_id) -> bool:
+    user_data = database["users"].find_one({"user_id": user_id})
+    if user_data:
+        return user_data.get(setting, False)
+    return False
 
-def check_setting( setting: str, user_id ) -> bool:
-  return database.execute( f"SELECT id FROM {setting}_users WHERE id = ?", (user_id,) ).fetchone() is not None
+# Function to toggle a setting for a user in MongoDB
+def toggle_setting(setting: str, user_id) -> str:
+    user_data = database["users"].find_one({"user_id": user_id})
+    if not user_data:
+        user_data = {"user_id": user_id}
+    
+    current_setting_value = user_data.get(setting, False)
+    user_data[setting] = not current_setting_value
+    
+    # Update or insert the user's settings
+    database["users"].update_one({"user_id": user_id}, {"$set": user_data}, upsert=True)
+    
+    return usersettings[setting]['onmessage'] if not current_setting_value else usersettings[setting]['offmessage']
 
-def toggle_setting( setting: str, user_id ) -> str:
-  if not check_setting(setting,user_id):
-    database.execute( f"INSERT INTO {setting}_users VALUES (?)", (user_id,) )
-    return usersettings[setting]['onmessage']
-  else:
-    database.execute( f"DELETE FROM {setting}_users WHERE id = ?", (user_id,) )
-    return usersettings[setting]['offmessage']
 
 # needs to be function so the toggle functions are local scope and don't get overwritten. It's a python limitation
 def register_toggle_command(setting):
@@ -385,7 +409,6 @@ async def operationCounterEEP(message):
 
 cron_minfreq = 60  # cron checks for due tasks every this many seconds
 cronjobs = [
-  { 'name': "db autosave",        'frequencySeconds':  300, 'function': lambda:database.commit() },
   { 'name': "clear old timeouts", 'frequencySeconds': 3600, 'function': lambda:
     globals().__setitem__('usr_cooldowns',{ id: cooldowntime for id, cooldowntime in usr_cooldowns.items() if cooldowntime > time() })
   },
@@ -417,25 +440,7 @@ async def cron():
 
 ############# DATABASE #############
 
-database = connect("sqlite.db")
-
-database.execute("""CREATE TABLE IF NOT EXISTS levels (
-  id UNSIGNED BIG INT PRIMARY KEY,
-  level UNSIGNED BIG INT,
-  xp UNSIGNED BIG INT
-  );
-""")
-for setting in usersettings:
-  database.execute(f"""CREATE TABLE IF NOT EXISTS {setting}_users (
-    id UNSIGNED BIG INT PRIMARY KEY
-    );
-  """)
-log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('table','view') ").fetchall())
-
-
+database = pymongo.MongoClient()["4DM-Leveling"]
 ############# STARTUP AND SHUTDOWN #############
 
 client.run(BOT_API_KEY)
-
-database.commit()
-database.close()
