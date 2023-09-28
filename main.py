@@ -106,28 +106,26 @@ async def printChunked(call_env,chunks,mentions):
     await call_env.channel.send(chunk,allowed_mentions=mentions)
 
 ############# LEADERBOARD COMMAND #############
+def get_leaderboard_msg(page: int, pagesize: int, is_xp_leaderboard: bool = False):
+  count = database["levels"].count_documents({"level": {"$gt": 0}})
+  no_pages = (count + pagesize - 1) // pagesize
 
-def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = False ) -> str:
-  
-  count = database["levels"].count_documents({"level": {"$gt": 0}}) 
-  
-  no_pages = ( count + pagesize - 1 )//pagesize
-  
   if page > no_pages:
-    page = no_pages
-  
-  no_skippedUsers = (page-1)*pagesize
-  if (no_skippedUsers < 0):
-    no_skippedUsers = 0
+      page = no_pages
+
+  no_skippedUsers = (page - 1) * pagesize
+
+  if no_skippedUsers < 0:
+      no_skippedUsers = 0
 
   pipeline = [
       {"$match": {"level": {"$gt": 0}}},  # Filter users with level > 0
       {"$sort": {"level": -1, "xp": -1, "id": 1}},  # Sort by level descending, XP descending, and ID ascending
       {"$skip": no_skippedUsers},  # Skip the specified number of users
       {"$limit": pagesize}  # Limit the results to the specified page size
-  ]
+    ]
 
-  data = list(database["levels"].aggregate(pipeline))  
+  data = list(database["levels"].aggregate(pipeline))
   data = [[user["id"], user["xp"], user["level"]] for user in data]
   
   # generate the rank (difficult because of ties, especially ties starting before current page)
