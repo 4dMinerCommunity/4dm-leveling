@@ -117,7 +117,9 @@ def get_leaderboard_msg( page: int, pagesize: int, is_xp_leaderboard: bool = Fal
     page = no_pages
   
   no_skippedUsers = (page-1)*pagesize
-  
+  if (no_skippedUsers < 0):
+    no_skippedUsers = 0
+
   pipeline = [
       {"$match": {"level": {"$gt": 0}}},  # Filter users with level > 0
       {"$sort": {"level": -1, "xp": -1, "id": 1}},  # Sort by level descending, XP descending, and ID ascending
