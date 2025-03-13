@@ -3,3 +3,5 @@
 *.db-journal
 # api key
 env.py
+
+__pycache__

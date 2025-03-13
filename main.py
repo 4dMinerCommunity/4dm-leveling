@@ -12,6 +12,10 @@ import unicodedata
 from env import *  # api keys
 from settings import *
 
+#rewrite print to flush, so it plays nice with systemd and other pipe stuff
+ogprint = print
+print = lambda *args, **kwargs: ogprint( *args, flush=True, **kwargs )
+
 log = print
 if not DEBUG: log = lambda *_: None  # disable log on release
 
