@@ -1,5 +1,5 @@
 # databases
-.db
-.db-journal
+*.db
+*.db-journal
 # api key
 env.py

@@ -418,18 +418,30 @@ async def cron():
   
   print('Ready. Starting internal Cron')
   
-  while not client.is_closed():  # check is_closed in case we missed the on_close event
+  while True:  # check is_closed in case we missed the on_close event
+    
+    # if close somehow happened right at the end of the wait_for
+    if not client.is_closed():
+      break
     
     for cronjob in cronjobs:
       if cronjob.get('nextrun',0) <= time():
-        cronjob['nextrun'] = time() + cronjob['frequencySeconds'] - cron_minfreq/10  # some leeway for rounding etc.
+        cronjob['nextrun'] = time() + cronjob['frequencySeconds'] - cron_minfreq/10  # some leeway for runtime delays etc.
         cronjob['function']()
         # log(f"ran {cronjob['name']}")
     
-    try:
-      if not client.is_closed(): await client.wait_for( 'close', timeout=cron_minfreq )
+    # if close happened during a job
+    if not client.is_closed():
       break
-    except: pass
+    
+    try:
+      # listen to close event. If none is received in cron_minfreq this crashes
+      await client.wait_for( 'close', timeout=cron_minfreq )
+      
+      # this only runs if wait_for did not timeout
+      break
+      
+    except: pass # normal path of execution
   
   print('Stopping internal Cron')
 
