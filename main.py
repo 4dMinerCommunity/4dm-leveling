@@ -9,7 +9,7 @@ from asyncio import create_task as unawait
 import re  # regex
 import unicodedata
 
-from env import *  # api key
+import env  # api key
 from settings import *
 
 #rewrite print to flush, so it plays nice with systemd and other pipe stuff
@@ -469,7 +469,7 @@ log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('tabl
 
 ############# STARTUP AND SHUTDOWN #############
 
-client.run(BOT_API_KEY)
+client.run(env.api_key)
 
 print("Stopping ...")
 

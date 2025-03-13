@@ -1,4 +1,8 @@
-# so I don't accidentally push my test settings like TIMEOUT=1 to prod
+# link to add bot to server: https://discord.com/api/oauth2/authorize?client_id=<your id here>&scope=bot%20messages.read%20applications.commands
+
+BOT_SERVER_IDS = [<your discord server id>]
+BOT_CHANNEL_ID = <channel id to print levelup messages to>
+
 
 TIMEOUT = 60  # how long until a user can gain xp again in seconds
 
