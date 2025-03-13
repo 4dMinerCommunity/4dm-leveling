@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 import nextcord, nextcord.ext.commands
 from nextcord import SlashOption as Option
@@ -17,6 +17,23 @@ if not DEBUG: log = lambda *_: None  # disable log on release
 
 ############# CLIENT INITIALIZATION #############
 
+class CustomHelpCommand(nextcord.ext.commands.DefaultHelpCommand):
+  
+  def get_ending_note(self):
+    return f"Type  {self.context.clean_prefix}{self.invoked_with} <command>  for more info on a command."
+  
+  # this would suffice technically but it causes an invalid request to dc every time, don't want to risk that.
+  # def command_not_found(self,string):
+  #   return ''
+  
+  async def command_callback(self, ctx, *, command=None):
+    
+    # has parameters, isn't a cog, and first param is a nonexistent command
+    if command is not None and ctx.bot.get_cog(command) is None and ctx.bot.all_commands.get(command.split(" ")[0]) is None:
+      return
+    
+    await super().command_callback(ctx, command=command)
+
 intents = nextcord.Intents.none()
 intents.guilds = True
 intents.members = True
@@ -25,7 +42,7 @@ intents.guild_messages = True
 intents.message_content = True
 
 log([ intent[0] for intent in intents if intent[1] ])
-client = nextcord.ext.commands.Bot( command_prefix='!', intents=intents, default_guild_ids=BOT_SERVER_IDS )
+client = nextcord.ext.commands.Bot( command_prefix='!', intents=intents, default_guild_ids=BOT_SERVER_IDS, help_command=CustomHelpCommand(no_category='Commands', width=500) )
 
 ############# LIBRARY #############
 
@@ -367,15 +384,16 @@ async def msg(message):
 @client.listen('on_message')
 async def operationCounterEEP(message):
   eep = f'{chr(0x6d)}eep'  # the accursed word
-  allowedEEPpercent = 0.15
+  allowedEEPratio = 0.15
   
   content = message.content
   content = re.sub("<:"+eep+":\\d{10,}>", eep, content)  # replace eep emojis with normal eeps for more realistic evaluation
   content = "".join(ch for ch in content if unicodedata.category(ch) not in {'Cf','Mn'})  # remove zero width characters
   content = content.lower().replace('е','e').replace('р','p')  # don't get fooled by cyrillics
+  content = content.replace(chr(0xe0000),'')  # more zw stuff
   
-  # only affect messages that are primarily (> allowedEEPpercent) eeps
-  if not len(content)*allowedEEPpercent < len(eep) * content.count( eep ):
+  # only affect messages that are primarily (> allowedEEPratio) eeps
+  if not len(content)*allowedEEPratio < len(eep) * content.count( eep ):
     return
   
   await message.add_reaction( nextcord.utils.get(message.guild.emojis,name='shut') )
@@ -406,7 +424,7 @@ async def cron():
       if cronjob.get('nextrun',0) <= time():
         cronjob['nextrun'] = time() + cronjob['frequencySeconds'] - cron_minfreq/10  # some leeway for rounding etc.
         cronjob['function']()
-        log(f"ran {cronjob['name']}")
+        # log(f"ran {cronjob['name']}")
     
     try:
       if not client.is_closed(): await client.wait_for( 'close', timeout=cron_minfreq )
@@ -437,5 +455,9 @@ log(database.execute(" SELECT type, name FROM sqlite_schema WHERE type IN ('tabl
 
 client.run(BOT_API_KEY)
 
+print("Stopping ...")
+
 database.commit()
 database.close()
+
+print("Stopped ...")

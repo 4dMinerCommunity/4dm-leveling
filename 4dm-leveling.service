@@ -1,0 +1,14 @@
+[Unit]
+Description=4DLeveling
+After=network-online.target
+
+[Service]
+Type=simple
+User=redjard
+ExecStart=/home/redjard/opt/4d_bots/4dm-leveling/main.py
+WorkingDirectory=/home/redjard/opt/4d_bots/4dm-leveling/
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
