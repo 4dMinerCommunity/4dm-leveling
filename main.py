@@ -421,7 +421,7 @@ async def cron():
   while True:  # check is_closed in case we missed the on_close event
     
     # if close somehow happened right at the end of the wait_for
-    if not client.is_closed():
+    if client.is_closed():
       break
     
     for cronjob in cronjobs:
@@ -431,7 +431,7 @@ async def cron():
         # log(f"ran {cronjob['name']}")
     
     # if close happened during a job
-    if not client.is_closed():
+    if client.is_closed():
       break
     
     try:
