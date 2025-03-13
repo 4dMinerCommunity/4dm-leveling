@@ -3,5 +3,7 @@
 *.db-journal
 # api key
 env.py
+# other config
+settings.py
 
 __pycache__

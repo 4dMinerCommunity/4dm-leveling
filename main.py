@@ -9,7 +9,7 @@ from asyncio import create_task as unawait
 import re  # regex
 import unicodedata
 
-from env import *  # api keys
+from env import *  # api key
 from settings import *
 
 #rewrite print to flush, so it plays nice with systemd and other pipe stuff
